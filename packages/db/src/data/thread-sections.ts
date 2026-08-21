@@ -14,10 +14,12 @@ type ThreadSectionWriteConnection = DbConnection | DbTransaction;
 export type ThreadSectionRow = typeof threadSections.$inferSelect;
 
 export interface CreateThreadSectionInput {
+  icon?: string | null;
   name: string;
 }
 
 export interface RenameThreadSectionInput {
+  icon?: string | null;
   id: string;
   name: string;
 }
@@ -45,6 +47,14 @@ export function normalizeThreadSectionName(
   name: string | null | undefined,
 ): string | null {
   const normalized = (name ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function normalizeThreadSectionIcon(
+  icon: string | null | undefined,
+): string | null | undefined {
+  if (icon === undefined) return undefined;
+  const normalized = (icon ?? "").trim();
   return normalized.length > 0 ? normalized : null;
 }
 
@@ -101,6 +111,7 @@ export function createThreadSection(
   input: CreateThreadSectionInput,
 ): CreateThreadSectionResult {
   const name = normalizeThreadSectionName(input.name);
+  const icon = normalizeThreadSectionIcon(input.icon) ?? null;
   if (!name) {
     throw new Error("Thread section name cannot be empty");
   }
@@ -115,6 +126,7 @@ export function createThreadSection(
     .insert(threadSections)
     .values({
       id: createThreadSectionId(),
+      icon,
       name,
       createdAt: now,
       updatedAt: now,
@@ -131,6 +143,7 @@ export function renameThreadSection(
   input: RenameThreadSectionInput,
 ): RenameThreadSectionResult {
   const name = normalizeThreadSectionName(input.name);
+  const requestedIcon = normalizeThreadSectionIcon(input.icon);
   if (!name) {
     return { status: "not_found" };
   }
@@ -142,7 +155,9 @@ export function renameThreadSection(
         return { status: "not_found" };
       }
 
-      if (existing.name === name) {
+      const icon = requestedIcon === undefined ? existing.icon : requestedIcon;
+
+      if (existing.name === name && existing.icon === icon) {
         return {
           status: "renamed",
           result: {
@@ -159,7 +174,7 @@ export function renameThreadSection(
       }
 
       tx.update(threadSections)
-        .set({ name, updatedAt: Date.now() })
+        .set({ icon, name, updatedAt: Date.now() })
         .where(eq(threadSections.id, input.id))
         .run();
       notifyThreadSectionListChanged(notifier);

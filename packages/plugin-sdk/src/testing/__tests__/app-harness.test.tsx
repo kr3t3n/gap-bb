@@ -1117,6 +1117,59 @@ describe("loadPluginApp", () => {
     ).rejects.toThrow('slots.experimental_providerIcon: duplicate id "codex"');
   });
 
+  it("captures and validates host-rendered sidebar section actions", async () => {
+    const presentation = () => ({
+      title: "Full Screen Section",
+      icon: "Maximize2",
+    });
+    const run = vi.fn();
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.experimental_sidebarSectionAction({
+          id: "fullscreen",
+          placement: "inline-preferred",
+          presentation,
+          run,
+        });
+      }),
+    );
+    expect(captured.sidebarSectionActions).toEqual([
+      { id: "fullscreen", placement: "inline-preferred", presentation, run },
+    ]);
+
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_sidebarSectionAction({
+            id: "invalid",
+            // @ts-expect-error deliberate host validation coverage
+            placement: "always-inline",
+            presentation,
+            run,
+          });
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.experimental_sidebarSectionAction: "placement" must be "inline-preferred" or "menu"',
+    );
+
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          for (const title of ["One", "Two"]) {
+            builder.slots.experimental_sidebarSectionAction({
+              id: "duplicate",
+              presentation: () => ({ title, icon: "Maximize2" }),
+              run,
+            });
+          }
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.experimental_sidebarSectionAction: duplicate id "duplicate"',
+    );
+  });
+
   it("invokes a captured messageAction run with a plugin-authored context", () => {
     const openPanel = (options: { actionId: string }) =>
       options.actionId === "panel";

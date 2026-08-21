@@ -34,12 +34,15 @@ export interface EnvironmentThreadGroup {
 }
 
 export interface SidebarSectionDefinition {
+  /** Missing when section icon metadata has not loaded yet. */
+  experimental_icon?: string | null;
   id: string;
   name: string;
 }
 
 // A flat section node backed by a durable DB section row.
 export interface SidebarSectionGroup {
+  experimental_icon?: string | null;
   id: string;
   key: string;
   name: string;
@@ -628,6 +631,7 @@ function buildSectionGroup(
 ): SidebarSectionGroup {
   const descendantThreads = getProjectThreadItemDescendants(items);
   return {
+    experimental_icon: section.experimental_icon,
     id: section.id,
     key: buildSectionKey(containerId, section.id),
     name: section.name,
@@ -671,7 +675,11 @@ function bucketIntoSections(
 
     let sectionItems = itemsBySectionId.get(sectionId);
     if (!sectionItems) {
-      const fallbackSection = { id: sectionId, name: "Section" };
+      const fallbackSection = {
+        experimental_icon: null,
+        id: sectionId,
+        name: "Section",
+      };
       sectionDefinitionsById.set(sectionId, fallbackSection);
       orderedSections.push(fallbackSection);
       sectionItems = [];

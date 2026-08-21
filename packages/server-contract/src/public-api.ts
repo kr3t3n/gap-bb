@@ -78,6 +78,7 @@ import type {
   EnvironmentPullRequestResponse,
   EnvironmentStatusQuery,
   EnvironmentStatusResponse,
+  ExperimentalThreadSectionWithIconResponse,
   HostDirectoryListing,
   HostDirectoryQuery,
   HostCloneDefaultPathQuery,
@@ -859,6 +860,12 @@ export const publicApiRoutes = {
   },
 
   threadSections: {
+    experimental_listWithIcons: defineRoute({
+      path: "/thread-sections/experimental-icons",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<ExperimentalThreadSectionWithIconResponse[]>(),
+    }),
     create: defineRoute({
       path: "/thread-sections",
       method: "post",

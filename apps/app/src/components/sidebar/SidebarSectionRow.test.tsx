@@ -42,6 +42,32 @@ describe("SidebarSectionRow", () => {
     expect(row?.style.paddingLeft).toBe("32px");
   });
 
+  it("renders an explicitly configured icon before the section name", () => {
+    const result = render(
+      <SidebarSectionRow
+        name="Building"
+        experimental_icon="ToolCase"
+        label="Building"
+        depth={1}
+        activity={NO_COLLAPSED_CHILD_ACTIVITY}
+        isCollapsed={false}
+        onToggleCollapsed={vi.fn()}
+      />,
+    );
+
+    const icon = result.container.querySelector('[data-icon="ToolCase"]');
+    const label = screen.getByText("Building");
+
+    expect(icon).not.toBeNull();
+    expect(icon?.compareDocumentPosition(label) ?? 0).toEqual(
+      expect.any(Number),
+    );
+    expect(
+      (icon?.compareDocumentPosition(label) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
   it("rolls hidden split threads up to the collapsed section row", () => {
     const store = createStore();
     store.set(splitLayoutAtom, {

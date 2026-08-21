@@ -1,13 +1,14 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type CSSProperties,
   type MouseEventHandler,
   type ReactNode,
 } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -32,6 +33,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
 import { EmptyState } from "@bb/shared-ui/empty-state";
@@ -102,6 +104,7 @@ import { SidebarSectionRow } from "./SidebarSectionRow";
 import { TopLevelSidebarSection } from "./TopLevelSidebarSection";
 import {
   sidebarCollapsedThreadSectionsAtom,
+  sidebarFullscreenSectionIdAtom,
   type CollapsibleSidebarSectionId,
   type SidebarSectionId,
 } from "./sidebarCollapsedAtoms";
@@ -135,6 +138,13 @@ import {
   type BuiltInSidebarSectionOptionsById,
 } from "./BuiltInSidebarSection";
 import { SectionThreadDndProvider } from "./SectionThreadDndContext";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import {
+  PluginSidebarSectionInlineAction,
+  PluginSidebarSectionOverflowItems,
+  usePluginSidebarSectionActions,
+} from "./PluginSidebarSectionActions";
+import { usePluginSlots } from "@/lib/plugin-slots";
 
 // Pin the project row plus this many parent levels (parent threads,
 // worktree group headers); rows deeper than the cap render non-sticky so a deep
@@ -205,6 +215,7 @@ interface SectionThreadTreeProps {
   renderTopLevelSectionHeaderActions?: (
     section: SidebarSectionDefinition,
   ) => TopLevelSectionHeaderActions;
+  visibleSectionCount?: number;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
 }
@@ -304,6 +315,7 @@ interface ThreadTreeItemRowProps {
   onRenameSection?: (section: SidebarSectionDefinition) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   renderTopLevelSectionHeaderActions?: SectionThreadTreeProps["renderTopLevelSectionHeaderActions"];
+  visibleSectionCount?: number;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
   consumeClickSuppression?: ConsumeDragClickSuppression;
@@ -326,6 +338,7 @@ interface SectionTreeItemRowProps {
   onRenameSection?: (section: SidebarSectionDefinition) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   renderTopLevelSectionHeaderActions?: SectionThreadTreeProps["renderTopLevelSectionHeaderActions"];
+  visibleSectionCount?: number;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
   consumeClickSuppression?: ConsumeDragClickSuppression;
@@ -1188,6 +1201,7 @@ const ThreadTreeItemRow = memo(function ThreadTreeItemRow({
   onRenameSection,
   onRemoveSection,
   renderTopLevelSectionHeaderActions,
+  visibleSectionCount,
   onToggleThreadCollapsed,
   onToggleEnvironmentCollapsed,
   consumeClickSuppression,
@@ -1211,6 +1225,7 @@ const ThreadTreeItemRow = memo(function ThreadTreeItemRow({
         onRenameSection={onRenameSection}
         onRemoveSection={onRemoveSection}
         renderTopLevelSectionHeaderActions={renderTopLevelSectionHeaderActions}
+        visibleSectionCount={visibleSectionCount}
         onToggleThreadCollapsed={onToggleThreadCollapsed}
         onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
         consumeClickSuppression={consumeClickSuppression}
@@ -1332,6 +1347,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
   onRenameSection,
   onRemoveSection,
   renderTopLevelSectionHeaderActions,
+  visibleSectionCount = 0,
   onToggleThreadCollapsed,
   onToggleEnvironmentCollapsed,
   consumeClickSuppression,
@@ -1342,10 +1358,16 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
   sortableStyle,
 }: SectionTreeItemRowProps) {
   const [isTopLevelActionsOpen, setIsTopLevelActionsOpen] = useState(false);
+  const isCompactViewport = useIsCompactViewport();
+  const [fullscreenSectionId, setFullscreenSectionId] = useAtom(
+    sidebarFullscreenSectionIdAtom,
+  );
   const collapsedSections = useAtomValue(sidebarCollapsedThreadSectionsAtom);
   const setCollapsedSections = useSetAtom(sidebarCollapsedThreadSectionsAtom);
   const sectionKey = section.key;
-  const isCollapsed = collapsedSections.includes(sectionKey);
+  const isTopLevelSection = variant === "section" && depthOffset === 0;
+  const isFullscreen = isTopLevelSection && fullscreenSectionId === section.id;
+  const isCollapsed = collapsedSections.includes(sectionKey) && !isFullscreen;
   const handleToggleCollapsed = useCallback(() => {
     setCollapsedSections((current) =>
       current.includes(sectionKey)
@@ -1370,6 +1392,40 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
   const sectionThreads = useMemo(
     () => getProjectThreadItemDescendants(section.items),
     [section.items],
+  );
+  const pluginActionContext = useMemo(
+    () => ({
+      section: {
+        id: section.id,
+        name: section.name,
+        experimental_icon: section.experimental_icon ?? null,
+        depth: headerDepth,
+        threadCount: sectionThreads.length,
+      },
+      sidebar: {
+        experimental_fullscreenSectionId: fullscreenSectionId,
+        experimental_visibleSectionCount: visibleSectionCount,
+        experimental_setFullscreenSection: (sectionId: string | null) => {
+          setFullscreenSectionId(sectionId);
+        },
+      },
+      isCompactViewport,
+    }),
+    [
+      fullscreenSectionId,
+      headerDepth,
+      isCompactViewport,
+      section.experimental_icon,
+      section.id,
+      section.name,
+      sectionThreads.length,
+      setFullscreenSectionId,
+      visibleSectionCount,
+    ],
+  );
+  const pluginSectionActions = usePluginSidebarSectionActions(
+    pluginActionContext,
+    isTopLevelSection,
   );
   const { itemKeys, estimateRows, getNavigationEntries, alwaysMountedKeys } =
     useWindowedThreadItems({
@@ -1414,6 +1470,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
                   onCreateThreadInSection={onCreateThreadInSection}
                   onRenameSection={onRenameSection}
                   onRemoveSection={onRemoveSection}
+                  visibleSectionCount={visibleSectionCount}
                   onToggleThreadCollapsed={onToggleThreadCollapsed}
                   onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
                   sectionDnd={sectionDnd}
@@ -1437,19 +1494,32 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     </div>
   ) : null;
 
-  if (variant === "section" && depthOffset === 0) {
+  if (isTopLevelSection) {
     const externalHeaderActions = renderTopLevelSectionHeaderActions?.(section);
-    const hasMenuActions = Boolean(onRenameSection || onRemoveSection);
+    const hasMenuActions = Boolean(
+      onRenameSection ||
+      onRemoveSection ||
+      pluginSectionActions.overflowActions.length > 0,
+    );
     const hasTopLevelActions = Boolean(
       externalHeaderActions?.actions ||
+      pluginSectionActions.inlineAction ||
       hasMenuActions ||
       onCreateThreadInSection,
     );
     const topLevelActionsOpen =
-      isTopLevelActionsOpen || externalHeaderActions?.actionsOpen === true;
+      isTopLevelActionsOpen ||
+      externalHeaderActions?.actionsOpen === true ||
+      pluginSectionActions.hasPressed;
     const topLevelActionControls = (
       <>
         {externalHeaderActions?.actions}
+        {pluginSectionActions.inlineAction ? (
+          <PluginSidebarSectionInlineAction
+            action={pluginSectionActions.inlineAction}
+            onRun={pluginSectionActions.run}
+          />
+        ) : null}
         {hasMenuActions ? (
           <DropdownMenu onOpenChange={setIsTopLevelActionsOpen}>
             <DropdownMenuTrigger asChild>
@@ -1457,7 +1527,11 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
                 type="button"
                 variant="ghost"
                 size="icon"
-                aria-label={`${section.name} section actions`}
+                aria-label={`${section.name} section actions${
+                  pluginSectionActions.hasPressedOverflow
+                    ? ", active plugin action"
+                    : ""
+                }`}
                 className={cn(
                   "rounded-md p-0 text-subtle-foreground hover:bg-transparent hover:text-foreground",
                   SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
@@ -1465,7 +1539,11 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
               >
                 <Icon
                   name="MoreHorizontal"
-                  className={COARSE_POINTER_ICON_SIZE_CLASS}
+                  className={cn(
+                    COARSE_POINTER_ICON_SIZE_CLASS,
+                    pluginSectionActions.hasPressedOverflow &&
+                      "text-foreground",
+                  )}
                 />
               </Button>
             </DropdownMenuTrigger>
@@ -1485,6 +1563,14 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
                   Remove
                 </DropdownMenuItem>
               ) : null}
+              {(onRenameSection || onRemoveSection) &&
+              pluginSectionActions.overflowActions.length > 0 ? (
+                <DropdownMenuSeparator />
+              ) : null}
+              <PluginSidebarSectionOverflowItems
+                actions={pluginSectionActions.overflowActions}
+                onRun={pluginSectionActions.run}
+              />
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -1529,6 +1615,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     return (
       <TopLevelSidebarSection
         label={section.name}
+        experimental_icon={section.experimental_icon}
         sectionId={section.id}
         actions={topLevelActions}
         actionsAlwaysVisible
@@ -1564,6 +1651,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     >
       <SidebarSectionRow
         name={section.name}
+        experimental_icon={section.experimental_icon}
         label={section.name}
         depth={headerDepth}
         activity={section.activity}
@@ -1750,6 +1838,7 @@ interface SectionThreadTreeItemsProps {
   onRenameSection?: (section: SidebarSectionDefinition) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   renderTopLevelSectionHeaderActions?: SectionThreadTreeProps["renderTopLevelSectionHeaderActions"];
+  visibleSectionCount?: number;
 }
 
 // Windowing inputs shared by every list of ProjectThreadItems: stable keys,
@@ -1826,6 +1915,7 @@ function SectionThreadTreeItems({
   onRenameSection,
   onRemoveSection,
   renderTopLevelSectionHeaderActions,
+  visibleSectionCount,
 }: SectionThreadTreeItemsProps) {
   const { itemKeys, estimateRows, getNavigationEntries, alwaysMountedKeys } =
     useWindowedThreadItems({
@@ -1864,6 +1954,7 @@ function SectionThreadTreeItems({
             renderTopLevelSectionHeaderActions={
               renderTopLevelSectionHeaderActions
             }
+            visibleSectionCount={visibleSectionCount}
             sectionDnd={sectionDnd ?? undefined}
           />
         );
@@ -1986,6 +2077,10 @@ export const ChronologicalSectionThreadSections = memo(
     renderPinnedSection,
     renderThreadsSection,
   }: ChronologicalSectionThreadSectionsProps) {
+    const [fullscreenSectionId, setFullscreenSectionId] = useAtom(
+      sidebarFullscreenSectionIdAtom,
+    );
+    const { sidebarSectionActions } = usePluginSlots();
     const threads =
       threadListState.status === "ready"
         ? threadListState.threads
@@ -2087,6 +2182,24 @@ export const ChronologicalSectionThreadSections = memo(
     const sectionItems = renderedRootItems.filter(
       (item) => item.kind === "section",
     );
+    const availableSectionIds = useMemo(
+      () => new Set(sectionItems.map((item) => item.group.id)),
+      [sectionItems],
+    );
+    useEffect(() => {
+      if (
+        fullscreenSectionId !== null &&
+        (sidebarSectionActions.length === 0 ||
+          !availableSectionIds.has(fullscreenSectionId))
+      ) {
+        setFullscreenSectionId(null);
+      }
+    }, [
+      availableSectionIds,
+      fullscreenSectionId,
+      setFullscreenSectionId,
+      sidebarSectionActions.length,
+    ]);
     const looseItems = renderedRootItems.filter(
       (item) => item.kind !== "section",
     );
@@ -2109,6 +2222,7 @@ export const ChronologicalSectionThreadSections = memo(
         onRenameSection={onRenameSection}
         onRemoveSection={onRemoveSection}
         renderTopLevelSectionHeaderActions={renderTopLevelSectionHeaderActions}
+        visibleSectionCount={topLevelSectionOrder.length}
       />
     );
 
@@ -2207,8 +2321,11 @@ export const ChronologicalSectionThreadSections = memo(
       pinned: renderPinnedSection?.(consumeClickSuppression),
       threads: renderThreadsSection?.(threadsContent, consumeClickSuppression),
     };
+    const visibleTopLevelSectionOrder = fullscreenSectionId
+      ? [buildSidebarEntitySectionId("section", fullscreenSectionId)]
+      : topLevelSectionOrder;
     const orderedSections = (
-      <SidebarSectionOrderList order={topLevelSectionOrder}>
+      <SidebarSectionOrderList order={visibleTopLevelSectionOrder}>
         {(sectionId) => {
           const builtInSection =
             builtInSections && configuredBuiltInSections

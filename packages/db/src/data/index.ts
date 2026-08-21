@@ -25,9 +25,11 @@ export {
   deleteThreadSection,
   getThreadSectionById,
   listThreadSections,
+  normalizeThreadSectionIcon,
   normalizeThreadSectionName,
   renameThreadSection,
 } from "./thread-sections.js";
+export type { ThreadSectionRow } from "./thread-sections.js";
 export {
   createPromptHistoryEntry,
   listStoredProjectPromptHistoryRows,

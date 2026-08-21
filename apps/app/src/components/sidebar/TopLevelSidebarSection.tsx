@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { Icon } from "@bb/shared-ui/icon";
+import { Icon, isIconName } from "@bb/shared-ui/icon";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import {
@@ -47,6 +47,8 @@ interface TopLevelSidebarSectionCollapseControl {
 
 export interface TopLevelSidebarSectionProps {
   label: string;
+  /** Optional named bb glyph; the text label remains the accessible identity. */
+  experimental_icon?: string | null;
   children: ReactNode;
   /** Stable identity for a persisted thread section. Built-in groups omit it. */
   sectionId?: string;
@@ -70,6 +72,7 @@ export interface TopLevelSidebarSectionProps {
  */
 export function TopLevelSidebarSection({
   label,
+  experimental_icon,
   children,
   sectionId,
   actions,
@@ -85,6 +88,10 @@ export function TopLevelSidebarSection({
   consumeClickSuppression,
   isDropTargetActive = false,
 }: TopLevelSidebarSectionProps) {
+  const sectionIcon =
+    experimental_icon && isIconName(experimental_icon)
+      ? experimental_icon
+      : null;
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
     collapsedThreads,
     collapseControl?.isCollapsed === true,
@@ -144,7 +151,14 @@ export function TopLevelSidebarSection({
         {...dragBindings?.attributes}
         {...(dragBindings?.listeners ?? {})}
       >
-        <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1 text-left">
+        <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {sectionIcon ? (
+            <Icon
+              name={sectionIcon}
+              className="size-3.5 shrink-0 text-subtle-foreground"
+              aria-hidden="true"
+            />
+          ) : null}
           <span className="min-w-0 truncate" title={label}>
             {label}
           </span>

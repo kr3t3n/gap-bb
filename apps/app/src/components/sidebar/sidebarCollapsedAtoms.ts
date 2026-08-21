@@ -2,6 +2,7 @@ import { atomWithStorage } from "jotai/utils";
 import type { CollapsibleSidebarSectionId } from "@bb/client-core";
 import {
   createJsonLocalStorage,
+  createTabScopedStorage,
   type SyncStorage,
 } from "@/lib/browser-storage";
 
@@ -23,6 +24,8 @@ const COLLAPSED_THREAD_SECTIONS_STORAGE_KEY =
   "bb.sidebar.collapsedThreadSections";
 const LEGACY_COLLAPSED_FOLDERS_STORAGE_KEY = "bb.sidebar.collapsedFolders";
 const COLLAPSED_MACHINES_STORAGE_KEY = "bb.sidebar.collapsedMachines";
+export const SIDEBAR_FULLSCREEN_SECTION_STORAGE_KEY =
+  "bb.sidebar.fullscreenSection";
 
 export type {
   CollapsibleSidebarSectionId,
@@ -188,5 +191,28 @@ export const sidebarCollapsedMachinesAtom = atomWithStorage<string[]>(
   COLLAPSED_MACHINES_STORAGE_KEY,
   [],
   createJsonLocalStorage<string[]>(),
+  { getOnInit: true },
+);
+
+const sidebarFullscreenSectionStorage = createTabScopedStorage<string | null>({
+  parse(storedValue, initialValue) {
+    if (storedValue === null) return initialValue;
+    try {
+      const parsed: unknown = JSON.parse(storedValue);
+      return typeof parsed === "string" || parsed === null
+        ? parsed
+        : initialValue;
+    } catch {
+      return initialValue;
+    }
+  },
+  serialize: (value) => JSON.stringify(value),
+});
+
+/** Per-tab section currently filling the chronological thread-list area. */
+export const sidebarFullscreenSectionIdAtom = atomWithStorage<string | null>(
+  SIDEBAR_FULLSCREEN_SECTION_STORAGE_KEY,
+  null,
+  sidebarFullscreenSectionStorage,
   { getOnInit: true },
 );

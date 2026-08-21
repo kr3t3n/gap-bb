@@ -13,7 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
-import { Icon } from "@bb/shared-ui/icon";
+import { Icon, isIconName } from "@bb/shared-ui/icon";
 import { SidebarStickyTier } from "@/components/ui/sidebar.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import {
@@ -56,6 +56,7 @@ function stopActionsClick(event: MouseEvent<HTMLElement>) {
 interface SidebarSectionRowProps {
   // Leaf segment shown on the header ("Q3").
   name: string;
+  experimental_icon?: string | null;
   label: string;
   // Render depth (section nesting + section offset); drives indentation.
   depth: number;
@@ -78,6 +79,7 @@ interface SidebarSectionRowProps {
 // project row while still mirroring parent-thread disclosure behavior.
 function SidebarSectionRowComponent({
   name,
+  experimental_icon,
   label,
   depth,
   activity,
@@ -92,6 +94,10 @@ function SidebarSectionRowComponent({
   onRemove,
   stickyLevel,
 }: SidebarSectionRowProps) {
+  const sectionIcon =
+    experimental_icon && isIconName(experimental_icon)
+      ? experimental_icon
+      : null;
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
     collapsedThreads,
@@ -156,7 +162,14 @@ function SidebarSectionRowComponent({
         onClick={onToggleCollapsed}
         className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
       />
-      <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1 text-left">
+      <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1.5 text-left">
+        {sectionIcon ? (
+          <Icon
+            name={sectionIcon}
+            className="size-3.5 shrink-0 text-subtle-foreground"
+            aria-hidden="true"
+          />
+        ) : null}
         <span className="min-w-0 truncate">{name}</span>
         <SidebarChildToggleChevron
           isCollapsed={isCollapsed}

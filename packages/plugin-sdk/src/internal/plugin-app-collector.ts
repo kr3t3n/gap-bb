@@ -13,6 +13,7 @@ import type {
   PluginProviderIconRegistration,
   PluginSettingsSectionRegistration,
   PluginSidebarFooterActionRegistration,
+  PluginSidebarSectionActionRegistration,
   PluginSourceCodeRendererRegistration,
   PluginThreadHeaderActionRegistration,
   PluginThreadListRegistration,
@@ -44,6 +45,7 @@ export interface CollectedPluginAppRegistrations {
   composerCustomizations: ComposerCustomization[];
   pendingInteractions: PluginPendingInteractionRegistration[];
   sidebarFooterActions: PluginSidebarFooterActionRegistration[];
+  sidebarSectionActions: PluginSidebarSectionActionRegistration[];
   threadLists: PluginThreadListRegistration[];
   threadHeaderActions: PluginThreadHeaderActionRegistration[];
   fileOpeners: PluginFileOpenerRegistration[];
@@ -75,6 +77,7 @@ export function collectPluginAppRegistrations(
     composerCustomizations: [],
     pendingInteractions: [],
     sidebarFooterActions: [],
+    sidebarSectionActions: [],
     threadLists: [],
     threadHeaderActions: [],
     fileOpeners: [],
@@ -94,6 +97,7 @@ export function collectPluginAppRegistrations(
     composerCustomization: new Set<string>(),
     pendingInteraction: new Set<string>(),
     sidebarFooterAction: new Set<string>(),
+    sidebarSectionAction: new Set<string>(),
     threadList: new Set<string>(),
     threadHeaderAction: new Set<string>(),
     fileOpener: new Set<string>(),
@@ -337,6 +341,34 @@ export function collectPluginAppRegistrations(
           id,
           title: requireNonEmptyString(kind, "title", registration.title),
           icon: requireNonEmptyString(kind, "icon", registration.icon),
+          run: registration.run,
+        });
+      },
+      experimental_sidebarSectionAction(registration) {
+        const kind = "slots.experimental_sidebarSectionAction";
+        const id = requireSlotId(kind, registration?.id);
+        requireUniqueId(kind, seenIds.sidebarSectionAction, id);
+        if (
+          registration.placement !== undefined &&
+          registration.placement !== "inline-preferred" &&
+          registration.placement !== "menu"
+        ) {
+          throw new Error(
+            `${kind}: "placement" must be "inline-preferred" or "menu"`,
+          );
+        }
+        if (typeof registration.presentation !== "function") {
+          throw new Error(`${kind}: "presentation" must be a function`);
+        }
+        if (typeof registration.run !== "function") {
+          throw new Error(`${kind}: "run" must be a function`);
+        }
+        collected.sidebarSectionActions.push({
+          id,
+          ...(registration.placement !== undefined
+            ? { placement: registration.placement }
+            : {}),
+          presentation: registration.presentation,
           run: registration.run,
         });
       },

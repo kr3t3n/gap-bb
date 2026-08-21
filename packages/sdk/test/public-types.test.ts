@@ -347,7 +347,12 @@ type ExpectedSystemKey =
 
 type ExpectedThemeKey = "catalog" | "get" | "set";
 
-type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
+type ExpectedThreadSectionsKey =
+  | "create"
+  | "delete"
+  | "experimental_listWithIcons"
+  | "list"
+  | "update";
 
 type ExpectedThreadsKey =
   | "archive"

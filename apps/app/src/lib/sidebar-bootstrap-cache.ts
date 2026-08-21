@@ -57,7 +57,12 @@ function boundSidebarBootstrapForCache(
   response: SidebarBootstrapResponse,
 ): SidebarBootstrapResponse {
   return {
-    sections: response.sections,
+    sections: response.sections.map(({ id, name, createdAt, updatedAt }) => ({
+      id,
+      name,
+      createdAt,
+      updatedAt,
+    })),
     projects: response.projects.map(boundProject),
     personalProject: boundProject(response.personalProject),
   };

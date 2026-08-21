@@ -5,6 +5,40 @@ entry here (see [AGENTS.md](../AGENTS.md), "Plugin API"). Dropping the prefix
 is the deliberate stabilization step: audit the entry, rename project-wide,
 and delete the entry in the same change.
 
+## Thread section icons (`CreateThreadSectionRequest.experimental_icon`, `UpdateThreadSectionRequest.experimental_icon`, and `ThreadSectionsArea.experimental_listWithIcons`)
+
+**What it does.** Lets a section opt into one named bb glyph while preserving
+its text label. Create and update accept the optional icon hint; the dedicated
+experimental list returns icon-aware rows. The stable section list and existing
+mutation responses retain their original strict shape so older SDK clients keep
+working against a newer server.
+
+**Audit before stabilizing.** Confirm real plugins need arbitrary named host
+glyphs rather than a smaller semantic vocabulary; decide whether invalid or
+retired names should be rejected by the server instead of omitted by clients;
+verify icons remain supplementary to accessible text across desktop, web, and
+mobile; and confirm a later stable list can add the field without breaking
+strict clients or needs explicit response-version negotiation.
+
+## `app.slots.experimental_sidebarSectionAction`
+
+**What it does.** Lets a plugin contribute a declarative, host-rendered action
+to persisted thread-section headers. The plugin computes a title, named icon,
+pressed state, and disabled state from live section/sidebar context; activation
+runs with that same context. The host keeps pressed actions inline, admits at
+most one inactive inline-preferred action, and moves remaining actions into the
+existing section overflow menu. The sidebar context includes client-local
+section fullscreen state and a setter, so a plugin can implement a direct
+toggle without owning sidebar markup.
+
+**Audit before stabilizing.** Confirm one inactive inline action is the right
+budget at compact and zoomed widths; verify arbitration remains deterministic
+when several plugins contribute pressed actions; decide whether fullscreen
+state should include plugin ownership or remain a section id; test disable,
+uninstall, removed-section, search, keyboard, and screen-reader behavior; and
+confirm the callback surface is sufficiently declarative without allowing
+plugins to render arbitrary section-header components.
+
 ## `experimental_buildBridgeToolCallContent`
 
 **What it does.** Converts a decoded bb tool-call response into the ordered

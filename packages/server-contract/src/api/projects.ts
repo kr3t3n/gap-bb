@@ -75,8 +75,24 @@ export const threadSectionSchema = z
   .strict();
 export type ThreadSectionResponse = z.infer<typeof threadSectionSchema>;
 
+export const experimentalThreadSectionWithIconSchema = threadSectionSchema
+  .extend({
+    experimental_icon: z.string().nullable(),
+  })
+  .strict();
+export type ExperimentalThreadSectionWithIconResponse = z.infer<
+  typeof experimentalThreadSectionWithIconSchema
+>;
+
+const experimentalThreadSectionIconInputSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80);
+
 export const createThreadSectionRequestSchema = z
   .object({
+    experimental_icon: experimentalThreadSectionIconInputSchema.optional(),
     name: z.string().min(1),
   })
   .strict();
@@ -86,6 +102,9 @@ export type CreateThreadSectionRequest = z.infer<
 
 export const updateThreadSectionRequestSchema = z
   .object({
+    experimental_icon: experimentalThreadSectionIconInputSchema
+      .nullable()
+      .optional(),
     id: z.string().min(1),
     name: z.string().min(1),
   })

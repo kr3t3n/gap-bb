@@ -166,6 +166,11 @@ export const ICON_NAMES: readonly IconName[] = [
   ...CORE_ICON_NAMES,
   ...EXTENDED_ICON_NAMES,
 ];
+const ICON_NAME_SET: ReadonlySet<string> = new Set(ICON_NAMES);
+
+export function isIconName(value: string): value is IconName {
+  return ICON_NAME_SET.has(value);
+}
 
 // Widened view of the core map so a union-typed name can be looked up
 // without a cast; extended names simply miss.

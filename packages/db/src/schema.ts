@@ -664,6 +664,7 @@ export const threadSections = sqliteTable(
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    icon: text("icon"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

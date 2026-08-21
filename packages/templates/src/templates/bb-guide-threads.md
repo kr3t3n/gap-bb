@@ -112,9 +112,11 @@ Listing:
 
 Sections:
 
-  bb thread section list
-  bb thread section create <name>
-  bb thread section rename <id> <name>
+  bb thread section list [--icons]
+  bb thread section create <name> [--icon <name>]
+  bb thread section rename <id> <name> [--icon <name>]
+  bb thread section icon <id> <icon>
+  bb thread section icon <id> --clear
   bb thread section delete <id> [--yes]
 
 Inspecting:

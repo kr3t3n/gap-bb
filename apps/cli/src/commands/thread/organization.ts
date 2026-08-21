@@ -21,6 +21,18 @@ interface SectionDeleteOptions extends JsonOptions {
   yes?: boolean;
 }
 
+interface SectionIconOptions extends JsonOptions {
+  clear?: boolean;
+}
+
+interface SectionListOptions extends JsonOptions {
+  icons?: boolean;
+}
+
+interface SectionWriteOptions extends JsonOptions {
+  icon?: string;
+}
+
 interface SearchOptions extends JsonOptions {
   limit?: string;
 }
@@ -83,27 +95,39 @@ export function registerOrganizationCommands(
   section
     .command("list")
     .description("List thread sections")
+    .option("--icons", "Include experimental semantic icon names")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (opts: JsonOptions) => {
-        const sections = await createCliBbSdk(getUrl()).threadSections.list();
+      action(async (opts: SectionListOptions) => {
+        const area = createCliBbSdk(getUrl()).threadSections;
+        const sections = opts.icons
+          ? await area.experimental_listWithIcons()
+          : await area.list();
         if (outputJson(opts, sections)) return;
         if (sections.length === 0) {
           console.log("No thread sections found");
           return;
         }
-        for (const item of sections) console.log(`${item.id}\t${item.name}`);
+        for (const item of sections) {
+          const icon =
+            "experimental_icon" in item && item.experimental_icon
+              ? `\t${item.experimental_icon}`
+              : "";
+          console.log(`${item.id}\t${item.name}${icon}`);
+        }
       }),
     );
 
   section
     .command("create <name>")
     .description("Create a thread section")
+    .option("--icon <name>", "Set an experimental semantic icon")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (name: string, opts: JsonOptions) => {
+      action(async (name: string, opts: SectionWriteOptions) => {
         const result = await createCliBbSdk(getUrl()).threadSections.create({
           name,
+          ...(opts.icon ? { experimental_icon: opts.icon } : {}),
         });
         if (outputJson(opts, result)) return;
         console.log(`Thread section ${result.id} created: ${result.name}`);
@@ -113,16 +137,53 @@ export function registerOrganizationCommands(
   section
     .command("rename <id> <name>")
     .description("Rename a thread section")
+    .option("--icon <name>", "Also set an experimental semantic icon")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (id: string, name: string, opts: JsonOptions) => {
+      action(async (id: string, name: string, opts: SectionWriteOptions) => {
         const result = await createCliBbSdk(getUrl()).threadSections.update({
           id,
           name,
+          ...(opts.icon ? { experimental_icon: opts.icon } : {}),
         });
         if (outputJson(opts, result)) return;
         console.log(`Thread section ${result.id} renamed: ${result.name}`);
       }),
+    );
+
+  section
+    .command("icon <id> [icon]")
+    .description("Set or clear a thread section's semantic icon")
+    .option("--clear", "Clear the icon")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(
+        async (
+          id: string,
+          icon: string | undefined,
+          opts: SectionIconOptions,
+        ) => {
+          if ((icon === undefined) === (opts.clear !== true)) {
+            throw new Error("Provide exactly one icon name or --clear.");
+          }
+          const area = createCliBbSdk(getUrl()).threadSections;
+          const section = (await area.experimental_listWithIcons()).find(
+            (candidate) => candidate.id === id,
+          );
+          if (!section) throw new Error(`Thread section ${id} not found.`);
+          const result = await area.update({
+            experimental_icon: opts.clear ? null : icon!,
+            id,
+            name: section.name,
+          });
+          if (outputJson(opts, result)) return;
+          console.log(
+            opts.clear
+              ? `Thread section ${result.id} icon cleared`
+              : `Thread section ${result.id} icon set: ${icon}`,
+          );
+        },
+      ),
     );
 
   section

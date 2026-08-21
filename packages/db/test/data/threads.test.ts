@@ -909,6 +909,33 @@ describe("threads", () => {
     ]);
   });
 
+  it("persists, preserves, and clears a thread section icon", () => {
+    const { db } = setup();
+    const created = createThreadSection(db, noopNotifier, {
+      icon: " ListTodo ",
+      name: "Planning",
+    });
+    expect(created.status).toBe("created");
+    if (created.status !== "created") return;
+    expect(created.section.icon).toBe("ListTodo");
+
+    renameThreadSection(db, noopNotifier, {
+      id: created.section.id,
+      name: "Shaping",
+    });
+    expect(listThreadSections(db)[0]).toMatchObject({
+      icon: "ListTodo",
+      name: "Shaping",
+    });
+
+    renameThreadSection(db, noopNotifier, {
+      icon: null,
+      id: created.section.id,
+      name: "Shaping",
+    });
+    expect(listThreadSections(db)[0]?.icon).toBeNull();
+  });
+
   it("returns duplicate when creating a section with an existing name", () => {
     const { db } = setup();
     const existing = mustCreateThreadSection(db, "Work");

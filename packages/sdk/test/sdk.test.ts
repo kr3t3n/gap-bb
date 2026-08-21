@@ -1258,7 +1258,7 @@ describe("@bb/sdk", () => {
     });
   });
 
-  it("exposes thread section mutations", async () => {
+  it("exposes thread section mutations and opt-in icon reads", async () => {
     const queue = createFetchQueue([
       {
         body: {
@@ -1268,6 +1268,17 @@ describe("@bb/sdk", () => {
           updatedAt: 1,
         },
         status: 201,
+      },
+      {
+        body: [
+          {
+            id: "sec_123",
+            name: "Review",
+            createdAt: 1,
+            updatedAt: 1,
+            experimental_icon: "FileQuestion",
+          },
+        ],
       },
     ]);
     const sdk = createBbSdk({
@@ -1279,12 +1290,31 @@ describe("@bb/sdk", () => {
     });
 
     await expect(
-      sdk.threadSections.create({ name: "Review" }),
+      sdk.threadSections.create({
+        name: "Review",
+        experimental_icon: "FileQuestion",
+      }),
     ).resolves.toMatchObject({ id: "sec_123", name: "Review" });
     expect(queue.requests[0]).toEqual({
-      bodyText: JSON.stringify({ name: "Review" }),
+      bodyText: JSON.stringify({
+        name: "Review",
+        experimental_icon: "FileQuestion",
+      }),
       method: "POST",
       url: "http://bb.test/api/v1/thread-sections",
+    });
+    await expect(
+      sdk.threadSections.experimental_listWithIcons(),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "sec_123",
+        experimental_icon: "FileQuestion",
+      }),
+    ]);
+    expect(queue.requests[1]).toEqual({
+      bodyText: undefined,
+      method: "GET",
+      url: "http://bb.test/api/v1/thread-sections/experimental-icons",
     });
   });
 

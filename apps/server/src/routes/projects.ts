@@ -272,7 +272,14 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
     );
   }
   return {
-    sections: listThreadSections(deps.db),
+    sections: listThreadSections(deps.db).map(
+      ({ id, name, createdAt, updatedAt }) => ({
+        id,
+        name,
+        createdAt,
+        updatedAt,
+      }),
+    ),
     projects: buildProjectsWithThreadsResponseFromRows(
       deps,
       listPublicProjects(deps.db),

@@ -2,9 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
+import type { ExperimentalThreadSectionWithIconResponse } from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
 import { request, requestOptions } from "@/lib/api";
+import { sdk } from "@/lib/sdk";
 import {
   useEnvironmentListRealtimeSubscription,
   useHostListRealtimeSubscription,
@@ -19,12 +21,39 @@ import {
   writeCachedSidebarBootstrap,
 } from "@/lib/sidebar-bootstrap-cache";
 
-function fetchSidebarNavigation(
+export type SidebarNavigationResponse = Omit<
+  SidebarBootstrapResponse,
+  "sections"
+> & {
+  sections: ExperimentalThreadSectionWithIconResponse[];
+};
+
+export function fetchSidebarNavigation(
   signal?: AbortSignal,
-): Promise<SidebarBootstrapResponse> {
-  return request<SidebarBootstrapResponse>(
-    apiClient["sidebar-bootstrap"].$get(undefined, requestOptions(signal)),
+): Promise<SidebarNavigationResponse> {
+  return Promise.all([
+    request<SidebarBootstrapResponse>(
+      apiClient["sidebar-bootstrap"].$get(undefined, requestOptions(signal)),
+    ),
+    sdk.threadSections.experimental_listWithIcons({ signal }).catch((error) => {
+      if (signal?.aborted) throw error;
+      return null;
+    }),
+  ]).then(([navigation, sections]) =>
+    sections ? { ...navigation, sections } : addMissingSectionIcons(navigation),
   );
+}
+
+function addMissingSectionIcons(
+  navigation: SidebarBootstrapResponse,
+): SidebarNavigationResponse {
+  return {
+    ...navigation,
+    sections: navigation.sections.map((section) => ({
+      ...section,
+      experimental_icon: null,
+    })),
+  };
 }
 
 export function useSidebarNavigation(options?: QueryOptions) {
@@ -34,7 +63,7 @@ export function useSidebarNavigation(options?: QueryOptions) {
   useProjectListRealtimeSubscription({ enabled });
   useThreadListRealtimeSubscription({ enabled });
 
-  return useQuery<SidebarBootstrapResponse>({
+  return useQuery<SidebarNavigationResponse>({
     queryKey: sidebarNavigationQueryKey(),
     queryFn: async ({ signal }) => {
       const response = await fetchSidebarNavigation(signal);
@@ -51,7 +80,10 @@ export function useSidebarNavigation(options?: QueryOptions) {
     // it in place. Consumers treat the replay like any sidebar data
     // (navigation only), and a cold profile still shows the skeleton, so
     // first-run behavior is unchanged.
-    placeholderData: () => readCachedSidebarBootstrap() ?? undefined,
+    placeholderData: () => {
+      const cached = readCachedSidebarBootstrap();
+      return cached ? addMissingSectionIcons(cached) : undefined;
+    },
   });
 }
 

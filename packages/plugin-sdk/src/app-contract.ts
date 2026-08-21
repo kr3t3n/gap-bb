@@ -576,6 +576,61 @@ export interface PluginSidebarFooterActionRegistration {
   run(context: PluginSidebarFooterActionContext): void | Promise<void>;
 }
 
+/** One native thread section exposed to a plugin-contributed row action. */
+export interface PluginSidebarSectionActionSection {
+  id: string;
+  name: string;
+  /** Optional semantic BB icon name stored separately from the text label. */
+  experimental_icon: string | null;
+  /** Zero for a first-level section; positive for nested section rows. */
+  depth: number;
+  threadCount: number;
+}
+
+/** Host-owned view state available to sidebar-section actions. */
+export interface PluginSidebarSectionActionView {
+  /** The section currently filling the thread-list area, or null. */
+  experimental_fullscreenSectionId: string | null;
+  /** Number of section groups the normal thread-list area currently exposes. */
+  experimental_visibleSectionCount: number;
+  /** Fill the thread-list area with one section, or restore all with null. */
+  experimental_setFullscreenSection(sectionId: string | null): void;
+}
+
+/** Current render/invocation context for one sidebar-section action. */
+export interface PluginSidebarSectionActionContext {
+  section: PluginSidebarSectionActionSection;
+  sidebar: PluginSidebarSectionActionView;
+  isCompactViewport: boolean;
+}
+
+/** Host-rendered presentation returned for one section/action pair. */
+export interface PluginSidebarSectionActionPresentation {
+  /** Tooltip and accessible label. */
+  title: string;
+  /** Semantic BB icon name. Invalid names make this presentation unavailable. */
+  icon: string;
+  /** Toggle state; pressed actions remain visible without row hover. */
+  pressed?: boolean;
+  disabled?: boolean;
+}
+
+/**
+ * A native action on each persisted thread-section header. The host owns the
+ * button and overflow chrome; return null from `presentation` to omit it for a
+ * section. Presentation and run failures are contained per action.
+ */
+export interface PluginSidebarSectionActionRegistration {
+  /** Unique within this slot for the plugin; letters, digits, `-`, `_`. */
+  id: string;
+  /** Preferred inline placement; extra actions overflow into the row menu. */
+  placement?: "inline-preferred" | "menu";
+  presentation(
+    context: PluginSidebarSectionActionContext,
+  ): PluginSidebarSectionActionPresentation | null;
+  run(context: PluginSidebarSectionActionContext): void | Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Sidebar thread data (the `experimental_useSidebarThreads` contract).
 // ---------------------------------------------------------------------------
@@ -1043,6 +1098,13 @@ export interface PluginAppSlots {
   pendingInteraction(registration: PluginPendingInteractionRegistration): void;
   sidebarFooterAction(
     registration: PluginSidebarFooterActionRegistration,
+  ): void;
+  /**
+   * Add a host-rendered action to persisted thread-section headers.
+   * Experimental: see docs/api_to_audit.md.
+   */
+  experimental_sidebarSectionAction(
+    registration: PluginSidebarSectionActionRegistration,
   ): void;
   /**
    * Replace the sidebar's thread list (see

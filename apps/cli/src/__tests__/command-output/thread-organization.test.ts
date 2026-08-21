@@ -27,6 +27,54 @@ describe("bb thread organization commands", () => {
     expect(create).toHaveBeenCalledWith({ json: { name: "Review" } });
   });
 
+  it("creates and clears semantic section icons", async () => {
+    const create = vi.fn(async () => ({
+      id: "section-planning",
+      name: "Planning",
+      createdAt: 1,
+      updatedAt: 1,
+    }));
+    const list = vi.fn(async () => [
+      {
+        id: "section-planning",
+        name: "Planning",
+        createdAt: 1,
+        updatedAt: 1,
+        experimental_icon: "ListTodo",
+      },
+    ]);
+    const update = vi.fn(async () => ({
+      id: "section-planning",
+      name: "Planning",
+      updatedThreadCount: 0,
+    }));
+    stubServerApi({
+      "v1.thread-sections.$post": create,
+      "v1.thread-sections.experimental-icons.$get": list,
+      "v1.thread-sections.$patch": update,
+    });
+
+    await runCommand(
+      ["thread", "section", "create", "Planning", "--icon", "ListTodo"],
+      register,
+    );
+    expect(create).toHaveBeenCalledWith({
+      json: { name: "Planning", experimental_icon: "ListTodo" },
+    });
+
+    await runCommand(
+      ["thread", "section", "icon", "section-planning", "--clear"],
+      register,
+    );
+    expect(update).toHaveBeenCalledWith({
+      json: {
+        experimental_icon: null,
+        id: "section-planning",
+        name: "Planning",
+      },
+    });
+  });
+
   it("creates an explicitly queued message", async () => {
     const create = vi.fn(async () => ({
       id: "queued-1",

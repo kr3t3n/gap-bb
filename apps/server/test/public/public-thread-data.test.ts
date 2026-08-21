@@ -101,11 +101,16 @@ describe("public thread data routes", () => {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: " Release QA " }),
+          body: JSON.stringify({
+            name: " Release QA ",
+            experimental_icon: "Beaker",
+          }),
         },
       );
       expect(createResponse.status).toBe(201);
-      const section = threadSectionSchema.parse(await readJson(createResponse));
+      const createBody = await readJson(createResponse);
+      expect(createBody).not.toHaveProperty("experimental_icon");
+      const section = threadSectionSchema.parse(createBody);
       expect(section.name).toBe("Release QA");
 
       const duplicateResponse = await harness.app.request(
@@ -148,6 +153,18 @@ describe("public thread data routes", () => {
         id: section.id,
         name: "Ship room",
         updatedThreadCount: 0,
+      });
+
+      const iconResponse = await harness.app.request(
+        "/api/v1/thread-sections/experimental-icons",
+      );
+      expect(iconResponse.status).toBe(200);
+      await expect(readJson(iconResponse)).resolves.toContainEqual({
+        id: section.id,
+        name: "Ship room",
+        createdAt: section.createdAt,
+        updatedAt: expect.any(Number),
+        experimental_icon: "Beaker",
       });
 
       const bootstrapResponse = await harness.app.request(
@@ -1654,152 +1671,148 @@ describe("public thread data routes", () => {
     });
   });
 
-  it(
-    "expands the newest slice when a large delegation parent completes last",
-    async () => {
-      await withTestHarness(async (harness) => {
-        const { environment, thread } = seedThreadFixture(harness);
-        const providerThreadId = "provider-thread-1";
-        const turnId = "parent-turn";
-        const parentToolCallId = "agent-call";
-        type EventInput = Parameters<typeof insertEvents>[2][number];
-        const eventInputs: EventInput[] = [];
-        let sequence = 0;
-        const push = (
-          event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
-        ): void => {
-          sequence += 1;
-          eventInputs.push({
-            ...event,
-            environmentId: environment.id,
-            sequence,
-            threadId: thread.id,
-          });
-        };
-
-        push({
-          providerThreadId,
-          scope: turnScope(turnId),
-          type: "turn/started",
-          itemId: null,
-          itemKind: null,
-          parentToolCallId: null,
-          data: JSON.stringify({}),
+  it("expands the newest slice when a large delegation parent completes last", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      const providerThreadId = "provider-thread-1";
+      const turnId = "parent-turn";
+      const parentToolCallId = "agent-call";
+      type EventInput = Parameters<typeof insertEvents>[2][number];
+      const eventInputs: EventInput[] = [];
+      let sequence = 0;
+      const push = (
+        event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
+      ): void => {
+        sequence += 1;
+        eventInputs.push({
+          ...event,
+          environmentId: environment.id,
+          sequence,
+          threadId: thread.id,
         });
+      };
+
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "turn/started",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({}),
+      });
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "item/started",
+        itemId: parentToolCallId,
+        itemKind: "toolCall",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            type: "toolCall",
+            id: parentToolCallId,
+            tool: "Agent",
+            arguments: { prompt: "Do the long task." },
+            status: "pending",
+          },
+        }),
+      });
+      for (let item = 0; item < 650; item += 1) {
+        const itemId = `command-${item}`;
+        const command = "x".repeat(25_000);
         push({
           providerThreadId,
           scope: turnScope(turnId),
           type: "item/started",
-          itemId: parentToolCallId,
-          itemKind: "toolCall",
-          parentToolCallId: null,
+          itemId,
+          itemKind: "commandExecution",
+          parentToolCallId,
           data: JSON.stringify({
             item: {
-              type: "toolCall",
-              id: parentToolCallId,
-              tool: "Agent",
-              arguments: { prompt: "Do the long task." },
+              type: "commandExecution",
+              id: itemId,
+              command,
+              cwd: "/tmp/test",
+              parentToolCallId,
               status: "pending",
+              approvalStatus: null,
             },
           }),
         });
-        for (let item = 0; item < 650; item += 1) {
-          const itemId = `command-${item}`;
-          const command = "x".repeat(25_000);
-          push({
-            providerThreadId,
-            scope: turnScope(turnId),
-            type: "item/started",
-            itemId,
-            itemKind: "commandExecution",
-            parentToolCallId,
-            data: JSON.stringify({
-              item: {
-                type: "commandExecution",
-                id: itemId,
-                command,
-                cwd: "/tmp/test",
-                parentToolCallId,
-                status: "pending",
-                approvalStatus: null,
-              },
-            }),
-          });
-          push({
-            providerThreadId,
-            scope: turnScope(turnId),
-            type: "item/completed",
-            itemId,
-            itemKind: "commandExecution",
-            parentToolCallId,
-            data: JSON.stringify({
-              item: {
-                type: "commandExecution",
-                id: itemId,
-                command,
-                cwd: "/tmp/test",
-                parentToolCallId,
-                status: "completed",
-                approvalStatus: null,
-                exitCode: 0,
-                aggregatedOutput: `output ${item}`,
-              },
-            }),
-          });
-        }
         push({
           providerThreadId,
           scope: turnScope(turnId),
           type: "item/completed",
-          itemId: parentToolCallId,
-          itemKind: "toolCall",
-          parentToolCallId: null,
+          itemId,
+          itemKind: "commandExecution",
+          parentToolCallId,
           data: JSON.stringify({
             item: {
-              type: "toolCall",
-              id: parentToolCallId,
-              tool: "Agent",
-              arguments: { prompt: "Do the long task." },
-              result: "",
+              type: "commandExecution",
+              id: itemId,
+              command,
+              cwd: "/tmp/test",
+              parentToolCallId,
               status: "completed",
+              approvalStatus: null,
+              exitCode: 0,
+              aggregatedOutput: `output ${item}`,
             },
           }),
         });
-        push({
-          providerThreadId,
-          scope: turnScope(turnId),
-          type: "turn/completed",
-          itemId: null,
-          itemKind: null,
-          parentToolCallId: null,
-          data: JSON.stringify({ status: "completed", providerThreadId }),
-        });
-        insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
-
-        const timelineResponse = await harness.app.request(
-          `/api/v1/threads/${thread.id}/timeline`,
-        );
-        expect(timelineResponse.status).toBe(200);
-        const timeline = threadTimelineResponseSchema.parse(
-          await readJson(timelineResponse),
-        );
-        const turnRow = timeline.rows.find(
-          (row): row is TimelineTurnRow => row.kind === "turn",
-        );
-        expect(turnRow).toBeDefined();
-        if (!turnRow) {
-          throw new Error("Expected a turn row");
-        }
-        expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
-
-        const detailsResponse = await harness.app.request(
-          `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
-        );
-        expect(detailsResponse.status).toBe(200);
+      }
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "item/completed",
+        itemId: parentToolCallId,
+        itemKind: "toolCall",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            type: "toolCall",
+            id: parentToolCallId,
+            tool: "Agent",
+            arguments: { prompt: "Do the long task." },
+            result: "",
+            status: "completed",
+          },
+        }),
       });
-    },
-    10_000,
-  );
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "turn/completed",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ status: "completed", providerThreadId }),
+      });
+      insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
+
+      const timelineResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline`,
+      );
+      expect(timelineResponse.status).toBe(200);
+      const timeline = threadTimelineResponseSchema.parse(
+        await readJson(timelineResponse),
+      );
+      const turnRow = timeline.rows.find(
+        (row): row is TimelineTurnRow => row.kind === "turn",
+      );
+      expect(turnRow).toBeDefined();
+      if (!turnRow) {
+        throw new Error("Expected a turn row");
+      }
+      expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
+
+      const detailsResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
+      );
+      expect(detailsResponse.status).toBe(200);
+    });
+  }, 10_000);
 
   it("hydrates turn-summary details with future accepted input context", async () => {
     await withTestHarness(async (harness) => {

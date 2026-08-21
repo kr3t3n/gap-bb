@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
@@ -20,6 +21,11 @@ import {
   type ProjectThreadListState,
 } from "./ProjectRow";
 import { buildSidebarEntitySectionId } from "@bb/client-core";
+import {
+  resetPluginSlotStoreForTest,
+  setPluginSlotRegistrations,
+} from "@/lib/plugin-slots";
+import { sidebarFullscreenSectionIdAtom } from "./sidebarCollapsedAtoms";
 
 const mockUpdateEnvironment = vi.hoisted(() => ({
   mutate: vi.fn(),
@@ -173,8 +179,102 @@ function expectCollapsedActivityAtSidebarEdge(label: string) {
 describe("ProjectRow interactions", () => {
   afterEach(() => {
     cleanup();
+    resetPluginSlotStoreForTest();
     mockDraftThreadIds.current = new Set();
     vi.clearAllMocks();
+  });
+
+  it("lets a plugin fullscreen one section with a pressed inline action", () => {
+    setPluginSlotRegistrations("thread-organizer", {
+      homepageSections: [],
+      settingsSections: [],
+      navPanels: [],
+      threadPanelActions: [],
+      sidebarFooterActions: [],
+      sidebarSectionActions: [
+        {
+          id: "fullscreen",
+          placement: "inline-preferred",
+          presentation: ({ section, sidebar }) => {
+            const pressed =
+              sidebar.experimental_fullscreenSectionId === section.id;
+            return {
+              title: pressed ? "Exit Full Screen" : "Full Screen Section",
+              icon: pressed ? "Minimize2" : "Maximize2",
+              pressed,
+            };
+          },
+          run: ({ section, sidebar }) => {
+            sidebar.experimental_setFullscreenSection(
+              sidebar.experimental_fullscreenSectionId === section.id
+                ? null
+                : section.id,
+            );
+          },
+        },
+      ],
+      fileOpeners: [],
+      messageDirectives: [],
+    });
+    const store = createStore();
+    store.set(sidebarFullscreenSectionIdAtom, null);
+    const queryClient = new QueryClient();
+    const sections = [
+      { id: "sec_planning", name: "Planning", experimental_icon: "ListTodo" },
+      { id: "sec_building", name: "Building", experimental_icon: "ToolCase" },
+    ];
+
+    render(
+      <TooltipProvider>
+        <Provider store={store}>
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <ChronologicalSectionThreadSections
+                threadListState={{
+                  status: "ready",
+                  threads: [
+                    makeThread({ id: "thr_plan", sectionId: "sec_planning" }),
+                    makeThread({ id: "thr_build", sectionId: "sec_building" }),
+                  ],
+                }}
+                compareThreads={() => 0}
+                sections={sections}
+                collapsedThreadIds={new Set()}
+                collapsedEnvironmentIds={new Set()}
+                onToggleThreadCollapsed={vi.fn()}
+                onToggleEnvironmentCollapsed={vi.fn()}
+                topLevelSectionOrder={sections.map((section) =>
+                  buildSidebarEntitySectionId("section", section.id),
+                )}
+                onTopLevelSectionOrderChange={vi.fn()}
+                pinnedReorderPending={false}
+                pinnedThreads={[]}
+                onReorderPinnedThread={vi.fn()}
+              />
+            </MemoryRouter>
+          </QueryClientProvider>
+        </Provider>
+      </TooltipProvider>,
+    );
+
+    const planning = document.querySelector<HTMLElement>(
+      '[data-sidebar-section-id="sec_planning"]',
+    )!;
+    fireEvent.click(
+      within(planning).getByRole("button", { name: "Full Screen Section" }),
+    );
+
+    expect(
+      document.querySelector('[data-sidebar-section-id="sec_building"]'),
+    ).toBeNull();
+    const exit = screen.getByRole("button", { name: "Exit Full Screen" });
+    expect(exit.getAttribute("aria-pressed")).toBe("true");
+    expect(exit.querySelector('[data-icon="Minimize2"]')).not.toBeNull();
+
+    fireEvent.click(exit);
+    expect(
+      document.querySelector('[data-sidebar-section-id="sec_building"]'),
+    ).not.toBeNull();
   });
 
   it("places the project disclosure after its label and keeps root threads flush", () => {

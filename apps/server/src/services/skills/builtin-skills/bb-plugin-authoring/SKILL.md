@@ -983,19 +983,23 @@ bb.agents.registerTool({
 // Tools and manifest skill trees are static registrations. configure() can
 // select this plugin's own ids and fill predefined slots in a selected skill
 // when BB resolves a thread/session config.
-bb.agents.configure((context) => ({
-  tools: context.provider.id === "codex" ? ["docs_search"] : [],
-  skills:
-    context.project.kind === "standard"
-      ? [
-          {
-            name: "repo-conventions",
-            slots: { current-project: `Project: ${context.project.name}` },
-          },
-        ]
-      : [],
-  instructions: `Docs selection resolved for ${context.project.name}.`,
-}));
+bb.agents.configure((context) => {
+  const skills =
+    context.project.kind === "standard" ? ["repo-conventions"] : [];
+  return {
+    tools: context.provider.id === "codex" ? ["docs_search"] : [],
+    skills,
+    experimental_skillSlots:
+      skills.length > 0
+        ? {
+            "repo-conventions": {
+              "current-project": `Project: ${context.project.name}`,
+            },
+          }
+        : undefined,
+    instructions: `Docs selection resolved for ${context.project.name}.`,
+  };
+});
 
 // Dynamic section evaluated at thread.start / turn.submit (sync, fast).
 // Return null to contribute nothing for that resolution. Duplicate factory
@@ -1048,8 +1052,9 @@ malformed output, an invalid override, more than 256 ids in either array, or a
 throwing callback fail closed for that plugin only. Dynamic `instructions` are
 truncated to 4096 characters.
 
-A skill object `{ name, slots }` selects the same static manifest skill as its
-string form and replaces Markdown between paired markers in `SKILL.md`:
+The optional experimental `experimental_skillSlots` field supplies generated
+content for skills already selected by their string name. It replaces Markdown
+between paired markers in `SKILL.md`:
 
 ```markdown
 <!-- bb:skill-slot current-project:start -->

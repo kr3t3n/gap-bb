@@ -214,6 +214,7 @@ describe("provider searches", () => {
       {
         id: encodeInstalledItemId("github"),
         title: "GitHub",
+        experimental_searchAliases: ["github"],
         subtitle: "Plugin description",
       },
     ]);
@@ -235,6 +236,7 @@ describe("provider searches", () => {
           entryId: "noema-entry",
         }),
         title: "Git Memory",
+        experimental_searchAliases: ["git-memory", "noema-entry"],
         subtitle: "Not installed · Catalog description",
       },
     ]);

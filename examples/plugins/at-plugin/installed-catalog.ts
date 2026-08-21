@@ -39,15 +39,15 @@ function matchTier(
   description: string,
 ): number | null {
   const foldedQuery = folded(normalizeUntrustedText(query));
-  if (foldedQuery.length === 0) return 2;
+  if (foldedQuery.length === 0) return 3;
 
   const name = folded(displayName);
   const id = folded(pluginId);
   const detail = folded(description);
   if (name === foldedQuery || id === foldedQuery) return 0;
-  if ([name, id, detail].some((field) => field.startsWith(foldedQuery)))
-    return 1;
-  if ([name, id, detail].some((field) => field.includes(foldedQuery))) return 2;
+  if ([name, id].some((field) => field.startsWith(foldedQuery))) return 1;
+  if ([name, id].some((field) => field.includes(foldedQuery))) return 2;
+  if (detail.includes(foldedQuery)) return 3;
   return null;
 }
 
@@ -139,6 +139,7 @@ export function searchInstalledPlugins(
       return {
         id: encodeInstalledItemId(candidate.pluginId),
         title: boundUntrustedText(candidate.displayName, MAX_ITEM_TITLE_BYTES),
+        experimental_searchAliases: [candidate.pluginId],
         ...(subtitle.length > 0 ? { subtitle } : {}),
       };
     });

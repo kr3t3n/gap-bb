@@ -133,6 +133,10 @@ export function searchCommunityPlugins(
         entryId: candidate.entryId,
       }),
       title: boundUntrustedText(candidate.displayName, MAX_ITEM_TITLE_BYTES),
+      experimental_searchAliases:
+        candidate.pluginId === candidate.entryId
+          ? [candidate.pluginId]
+          : [candidate.pluginId, candidate.entryId],
       subtitle: boundUntrustedText(
         subtitleParts.join(" · "),
         MAX_ITEM_SUBTITLE_BYTES,

@@ -24,7 +24,6 @@ interface PluginContributions {
   mentionProviders: PluginMentionProviderContribution[];
 }
 
-
 const EMPTY_CONTRIBUTIONS: PluginContributions = {
   mentionProviders: [],
 };

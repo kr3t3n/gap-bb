@@ -66,6 +66,8 @@ export type PromptMentionSuggestion =
       itemId: string;
       providerLabel: string;
       title: string;
+      /** Non-visible provider identities used only for host-owned ranking. */
+      searchAliases: readonly string[];
       subtitle: string | null;
       /** Named shared-UI icon hint supplied by the plugin item. */
       icon: string | null;
@@ -85,7 +87,7 @@ function mentionSuggestionSearchNames(
     return [suggestion.name, suggestion.sectionId];
   }
   if (suggestion.kind === "plugin") {
-    return [suggestion.title];
+    return [suggestion.title, ...suggestion.searchAliases];
   }
   return [suggestion.name, suggestion.path, suggestion.replacement];
 }

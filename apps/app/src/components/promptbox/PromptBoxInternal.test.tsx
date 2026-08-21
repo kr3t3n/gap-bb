@@ -2786,6 +2786,7 @@ describe("PromptBoxInternal mention triggers", () => {
     itemId: "issue:owner/repo#42",
     providerLabel: "GitHub issues",
     title: "#42 Fix login bug",
+    searchAliases: [],
     subtitle: "owner/repo",
     icon: null,
     replacement: "#42 Fix login bug",

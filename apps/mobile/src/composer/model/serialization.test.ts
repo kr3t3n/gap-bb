@@ -220,6 +220,7 @@ describe("insertion from suggestions", () => {
         itemId: "tasks:ABC-1",
         providerLabel: "Tasks",
         title: "ABC-1 Ship it",
+        searchAliases: [],
         subtitle: null,
         icon: null,
         replacement: "ABC-1 Ship it",

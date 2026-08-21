@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCommandSuggestions,
   buildPathMentionSuggestions,
+  buildPluginMentionSuggestions,
   buildPluginMentionTriggers,
   buildThreadMentionSuggestions,
   mergeMentionSuggestions,
@@ -126,6 +127,7 @@ describe("mergeMentionSuggestions", () => {
       itemId: "installed:plugin",
       providerLabel: "Installed",
       title: "Plugin",
+      searchAliases: [],
       subtitle: null,
       icon: null,
       replacement: "Plugin",
@@ -155,6 +157,43 @@ describe("mergeMentionSuggestions", () => {
         plugins: [installedExact, installedWeaker, communityPrefix],
       }),
     ).toEqual([installedExact, installedWeaker, thread, communityPrefix]);
+  });
+
+  it("promotes an exact plugin identity alias above a built-in prefix", () => {
+    const [plugin] = buildPluginMentionSuggestions([
+      {
+        pluginId: "at-plugin",
+        providerId: "installed",
+        label: "Installed",
+        items: [
+          {
+            itemId: "installed:at-plugin",
+            title: "Plugin Focus",
+            searchAliases: ["at-plugin"],
+            subtitle: null,
+            icon: null,
+          },
+        ],
+      },
+    ]);
+    const project = {
+      kind: "project" as const,
+      path: "project:p",
+      replacement: "project:p",
+      projectId: "p",
+      name: "at-plugin migration",
+    };
+
+    expect(
+      mergeMentionSuggestions({
+        query: "at-plugin",
+        threads: [],
+        projects: [project],
+        sections: [],
+        paths: [],
+        plugins: plugin === undefined ? [] : [plugin],
+      }),
+    ).toEqual([plugin, project]);
   });
 
   it("leads with paths when the query looks like a path", () => {

@@ -88,6 +88,7 @@ interface PluginMentionSearchItem {
   /** Opaque server-composed item reference; rides the mention resource. */
   itemId: string;
   title: string;
+  searchAliases: readonly string[];
   subtitle: string | null;
   icon: string | null;
 }
@@ -100,29 +101,50 @@ export interface PluginMentionSearchGroup {
   items: PluginMentionSearchItem[];
 }
 
-function isMentionSearchItem(value: unknown): value is PluginMentionSearchItem {
-  if (typeof value !== "object" || value === null) return false;
+function toMentionSearchItem(value: unknown): PluginMentionSearchItem | null {
+  if (typeof value !== "object" || value === null) return null;
   const item = value as Record<string, unknown>;
-  return (
-    typeof item.itemId === "string" &&
-    typeof item.title === "string" &&
-    (item.subtitle === null || typeof item.subtitle === "string") &&
-    (item.icon === null || typeof item.icon === "string")
-  );
+  const searchAliases = item.searchAliases ?? [];
+  if (
+    typeof item.itemId !== "string" ||
+    typeof item.title !== "string" ||
+    !Array.isArray(searchAliases) ||
+    !searchAliases.every((alias) => typeof alias === "string") ||
+    (item.subtitle !== null && typeof item.subtitle !== "string") ||
+    (item.icon !== null && typeof item.icon !== "string")
+  ) {
+    return null;
+  }
+  return {
+    itemId: item.itemId,
+    title: item.title,
+    searchAliases,
+    subtitle: item.subtitle,
+    icon: item.icon,
+  };
 }
 
-function isMentionSearchGroup(
-  value: unknown,
-): value is PluginMentionSearchGroup {
-  if (typeof value !== "object" || value === null) return false;
+function toMentionSearchGroup(value: unknown): PluginMentionSearchGroup | null {
+  if (typeof value !== "object" || value === null) return null;
   const group = value as Record<string, unknown>;
-  return (
-    typeof group.pluginId === "string" &&
-    typeof group.providerId === "string" &&
-    typeof group.label === "string" &&
-    Array.isArray(group.items) &&
-    group.items.every(isMentionSearchItem)
-  );
+  if (
+    typeof group.pluginId !== "string" ||
+    typeof group.providerId !== "string" ||
+    typeof group.label !== "string" ||
+    !Array.isArray(group.items)
+  ) {
+    return null;
+  }
+  const items = group.items.map(toMentionSearchItem);
+  if (items.some((item) => item === null)) return null;
+  return {
+    pluginId: group.pluginId,
+    providerId: group.providerId,
+    label: group.label,
+    items: items.filter(
+      (item): item is PluginMentionSearchItem => item !== null,
+    ),
+  };
 }
 
 interface PluginMentionSearchArgs {
@@ -151,7 +173,9 @@ async function fetchPluginMentionSearch(
   if (!response.ok) return [];
   const body = (await response.json()) as { groups?: unknown };
   return Array.isArray(body.groups)
-    ? body.groups.filter(isMentionSearchGroup)
+    ? body.groups
+        .map(toMentionSearchGroup)
+        .filter((group): group is PluginMentionSearchGroup => group !== null)
     : [];
 }
 

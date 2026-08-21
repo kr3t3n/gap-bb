@@ -926,6 +926,12 @@ export interface PluginMentionSearchContext {
 export interface PluginMentionItem {
   id: string;
   title: string;
+  /**
+   * Additional non-visible names the host may use to rank this item against
+   * other mention sources. The host computes relevance itself; providers do
+   * not supply numeric ranks. At most 8 aliases of 256 UTF-8 bytes each.
+   */
+  experimental_searchAliases?: readonly string[];
   subtitle?: string;
   icon?: string;
 }

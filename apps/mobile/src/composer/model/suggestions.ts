@@ -292,6 +292,7 @@ export function buildPathMentionSuggestions(args: {
 export interface PluginMentionSearchItem {
   itemId: string;
   title: string;
+  searchAliases: readonly string[];
   subtitle: string | null;
   icon: string | null;
 }
@@ -318,6 +319,7 @@ export function buildPluginMentionSuggestions(
         itemId: item.itemId,
         providerLabel: group.label,
         title,
+        searchAliases: item.searchAliases,
         subtitle: item.subtitle,
         icon: item.icon,
         replacement: title,

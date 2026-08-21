@@ -18,6 +18,7 @@ function thread(title: string): PromptMentionSuggestion {
 function plugin(
   title: string,
   providerId = "installed",
+  searchAliases: readonly string[] = [],
 ): PromptMentionSuggestion {
   return {
     kind: "plugin",
@@ -26,6 +27,7 @@ function plugin(
     itemId: `${providerId}:${title}`,
     providerLabel: providerId,
     title,
+    searchAliases,
     subtitle: null,
     icon: null,
     replacement: title,
@@ -40,6 +42,18 @@ describe("orderMentionSuggestions", () => {
         "  PLUGIN ",
       ).map((suggestion) => suggestion.replacement),
     ).toEqual(["Plugin", "thread:t"]);
+  });
+
+  it("uses plugin identity aliases without accepting a provider rank", () => {
+    expect(
+      orderMentionSuggestions(
+        [
+          thread("at-plugin migration"),
+          plugin("Plugin Focus", "installed", ["at-plugin"]),
+        ],
+        "at-plugin",
+      ).map((suggestion) => suggestion.replacement),
+    ).toEqual(["Plugin Focus", "thread:t"]);
   });
 
   it("keeps sections contiguous under their strongest match", () => {

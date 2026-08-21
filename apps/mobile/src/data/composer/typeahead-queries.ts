@@ -122,27 +122,48 @@ export interface PluginMentionSearchArgs {
   threadId: string | null;
 }
 
-function isMentionSearchGroup(
-  value: unknown,
-): value is PluginMentionSearchGroup {
-  if (typeof value !== "object" || value === null) return false;
+function toMentionSearchGroup(value: unknown): PluginMentionSearchGroup | null {
+  if (typeof value !== "object" || value === null) return null;
   const group = value as Record<string, unknown>;
-  return (
-    typeof group.pluginId === "string" &&
-    typeof group.providerId === "string" &&
-    typeof group.label === "string" &&
-    Array.isArray(group.items) &&
-    group.items.every((item) => {
-      if (typeof item !== "object" || item === null) return false;
-      const record = item as Record<string, unknown>;
-      return (
-        typeof record.itemId === "string" &&
-        typeof record.title === "string" &&
-        (record.subtitle === null || typeof record.subtitle === "string") &&
-        (record.icon === null || typeof record.icon === "string")
-      );
-    })
-  );
+  if (
+    typeof group.pluginId !== "string" ||
+    typeof group.providerId !== "string" ||
+    typeof group.label !== "string" ||
+    !Array.isArray(group.items)
+  ) {
+    return null;
+  }
+  const items = group.items.map((item) => {
+    if (typeof item !== "object" || item === null) return null;
+    const record = item as Record<string, unknown>;
+    const searchAliases = record.searchAliases ?? [];
+    if (
+      typeof record.itemId !== "string" ||
+      typeof record.title !== "string" ||
+      !Array.isArray(searchAliases) ||
+      !searchAliases.every((alias) => typeof alias === "string") ||
+      (record.subtitle !== null && typeof record.subtitle !== "string") ||
+      (record.icon !== null && typeof record.icon !== "string")
+    ) {
+      return null;
+    }
+    return {
+      itemId: record.itemId,
+      title: record.title,
+      searchAliases,
+      subtitle: record.subtitle,
+      icon: record.icon,
+    };
+  });
+  if (items.some((item) => item === null)) return null;
+  return {
+    pluginId: group.pluginId,
+    providerId: group.providerId,
+    label: group.label,
+    items: items.filter(
+      (item): item is NonNullable<typeof item> => item !== null,
+    ),
+  };
 }
 
 async function fetchPluginMentionSearch(
@@ -160,7 +181,9 @@ async function fetchPluginMentionSearch(
   if (!response.ok) return [];
   const body = (await response.json()) as { groups?: unknown };
   return Array.isArray(body.groups)
-    ? body.groups.filter(isMentionSearchGroup)
+    ? body.groups
+        .map(toMentionSearchGroup)
+        .filter((group): group is PluginMentionSearchGroup => group !== null)
     : [];
 }
 

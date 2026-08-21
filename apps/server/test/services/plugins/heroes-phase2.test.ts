@@ -206,6 +206,7 @@ describe("hero plugin: agent-enrichment (Phase 2 surfaces)", () => {
           {
             itemId: "docs:testing.md",
             title: "Testing",
+            searchAliases: [],
             subtitle: "testing.md",
             icon: null,
           },

@@ -709,6 +709,32 @@ function normalizeAgentToolResult(
  * runs this inside invokeWrapped so they count as handler errors and the
  * provider contributes an empty group.
  */
+const MAX_MENTION_SEARCH_ALIASES = 8;
+const MAX_MENTION_SEARCH_ALIAS_BYTES = 256;
+
+function normalizeMentionSearchAliases(args: {
+  providerId: string;
+  itemIndex: number;
+  value: unknown;
+}): string[] {
+  if (args.value === undefined) return [];
+  if (
+    !Array.isArray(args.value) ||
+    args.value.length > MAX_MENTION_SEARCH_ALIASES ||
+    args.value.some(
+      (alias) =>
+        typeof alias !== "string" ||
+        alias.trim().length === 0 ||
+        Buffer.byteLength(alias, "utf8") > MAX_MENTION_SEARCH_ALIAS_BYTES,
+    )
+  ) {
+    throw new Error(
+      `mention provider "${args.providerId}" items[${args.itemIndex}].experimental_searchAliases must contain at most ${MAX_MENTION_SEARCH_ALIASES} non-empty strings of at most ${MAX_MENTION_SEARCH_ALIAS_BYTES} UTF-8 bytes each`,
+    );
+  }
+  return [...args.value];
+}
+
 function normalizeMentionSearchItems(
   providerId: string,
   result: unknown,
@@ -722,6 +748,7 @@ function normalizeMentionSearchItems(
     const typed = item as {
       id?: unknown;
       title?: unknown;
+      experimental_searchAliases?: unknown;
       subtitle?: unknown;
       icon?: unknown;
     } | null;
@@ -740,6 +767,11 @@ function normalizeMentionSearchItems(
     return {
       itemId: `${providerId}:${typed.id}`,
       title: typed.title,
+      searchAliases: normalizeMentionSearchAliases({
+        providerId,
+        itemIndex: index,
+        value: typed.experimental_searchAliases,
+      }),
       subtitle:
         typeof typed.subtitle === "string" && typed.subtitle.trim().length > 0
           ? typed.subtitle

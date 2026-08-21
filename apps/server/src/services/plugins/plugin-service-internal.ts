@@ -197,6 +197,7 @@ export interface PluginMentionProviderContribution {
 export interface PluginMentionSearchItem {
   itemId: string;
   title: string;
+  searchAliases: string[];
   subtitle: string | null;
   icon: string | null;
 }

@@ -55,6 +55,8 @@ const MENTION_SOURCE = `
           {
             id: "ISS-42",
             title: "Fix login bug",
+            experimental_searchAliases: ["ISS-42", "linear-fix"],
+            rank: -100,
             subtitle: "ctx:" + ctx.trigger + ":" + ctx.query + ":" + ctx.projectId + ":" + ctx.threadId,
           },
           { id: "ISS-43", title: "Ship mention providers" },
@@ -230,6 +232,7 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
           {
             itemId: "issues:ISS-42",
             title: "Fix login bug",
+            searchAliases: ["ISS-42", "linear-fix"],
             // The provider saw the forwarded query + project/thread context.
             subtitle: "ctx:@:fix:proj_1:thr_1",
             icon: null,
@@ -237,6 +240,7 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
           {
             itemId: "issues:ISS-43",
             title: "Ship mention providers",
+            searchAliases: [],
             subtitle: null,
             icon: null,
           },
@@ -250,6 +254,7 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
           {
             itemId: "docs:onboarding",
             title: "Onboarding guide",
+            searchAliases: [],
             subtitle: null,
             icon: null,
           },
@@ -279,18 +284,63 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
           {
             itemId: "issues:ISS-42",
             title: "Fix login bug",
+            searchAliases: ["ISS-42", "linear-fix"],
             subtitle: "ctx:#:fix:proj_1:thr_1",
             icon: null,
           },
           {
             itemId: "issues:ISS-43",
             title: "Ship mention providers",
+            searchAliases: [],
             subtitle: null,
             icon: null,
           },
         ],
       },
     ]);
+  });
+
+  it("bounds provider search aliases and drops an invalid provider group", async () => {
+    const rootDir = await writePlugin(
+      join(harness.config.dataDir, "fixtures"),
+      {
+        name: "bb-plugin-too-many-mention-aliases",
+        serverSource: `
+          export default function plugin(bb: any) {
+            bb.ui.registerMentionProvider({
+              id: "aliases",
+              label: "Aliases",
+              search: () => [{
+                id: "one",
+                title: "One",
+                experimental_searchAliases: Array.from({ length: 9 }, (_, index) => "alias-" + index),
+              }],
+              resolve: () => ({ context: "one" }),
+            });
+          }
+        `,
+      },
+    );
+    const installed = await harness.pluginService.installPath(rootDir);
+    expect(installed.status).toBe("running");
+
+    const response = await harness.app.request(
+      `${BASE}/api/v1/plugins/mentions/search?q=one`,
+    );
+    const body = (await response.json()) as {
+      groups: Array<{ pluginId: string }>;
+    };
+    expect(
+      body.groups.some(
+        (group) => group.pluginId === "too-many-mention-aliases",
+      ),
+    ).toBe(false);
+    expect(
+      harness.pluginService
+        .list()
+        .find((plugin) => plugin.id === "too-many-mention-aliases")
+        ?.handlerStats.errorCount,
+    ).toBe(1);
   });
 
   it("rejects invalid search trigger params", async () => {
@@ -686,7 +736,13 @@ describe("mention search time box", () => {
         providerId: "fast",
         label: "Fast",
         items: [
-          { itemId: "fast:one", title: "One", subtitle: null, icon: null },
+          {
+            itemId: "fast:one",
+            title: "One",
+            searchAliases: [],
+            subtitle: null,
+            icon: null,
+          },
         ],
       },
     ]);

@@ -5,6 +5,19 @@ entry here (see [AGENTS.md](../AGENTS.md), "Plugin API"). Dropping the prefix
 is the deliberate stabilization step: audit the entry, rename project-wide,
 and delete the entry in the same change.
 
+## Mention search aliases (`PluginMentionItem.experimental_searchAliases`)
+
+**What it does.** Lets a mention provider attach up to eight non-visible search
+names to a result, each bounded to 256 UTF-8 bytes. bb combines those aliases
+with the visible title to compute exact, prefix, and other cross-source
+relevance on desktop and mobile. Providers cannot supply numeric ranks.
+
+**Audit before stabilizing.** Confirm the count and byte limits against real
+identity shapes; decide whether aliases should remain provider-authored or
+become a host-owned identity field; verify case folding and whitespace rules
+for non-English names; and confirm exact aliases should continue outranking
+weaker built-in matches without changing within-section ordering.
+
 ## `experimental_buildBridgeToolCallContent`
 
 **What it does.** Converts a decoded bb tool-call response into the ordered

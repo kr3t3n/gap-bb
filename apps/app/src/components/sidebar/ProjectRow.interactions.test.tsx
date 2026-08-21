@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -272,6 +273,113 @@ describe("ProjectRow interactions", () => {
     expect(exit.querySelector('[data-icon="Minimize2"]')).not.toBeNull();
 
     fireEvent.click(exit);
+    expect(
+      document.querySelector('[data-sidebar-section-id="sec_building"]'),
+    ).not.toBeNull();
+  });
+
+  it("exits fullscreen if the plugin action that owns it disappears", async () => {
+    setPluginSlotRegistrations("thread-organizer", {
+      homepageSections: [],
+      settingsSections: [],
+      navPanels: [],
+      threadPanelActions: [],
+      sidebarFooterActions: [],
+      sidebarSectionActions: [
+        {
+          id: "fullscreen",
+          placement: "inline-preferred",
+          presentation: ({ section, sidebar }) => ({
+            title:
+              sidebar.experimental_fullscreenSectionId === section.id
+                ? "Exit Full Screen"
+                : "Full Screen Section",
+            icon:
+              sidebar.experimental_fullscreenSectionId === section.id
+                ? "Minimize2"
+                : "Maximize2",
+            pressed:
+              sidebar.experimental_fullscreenSectionId === section.id,
+          }),
+          run: ({ section, sidebar }) => {
+            sidebar.experimental_setFullscreenSection(section.id);
+          },
+        },
+      ],
+      fileOpeners: [],
+      messageDirectives: [],
+    });
+    const store = createStore();
+    store.set(sidebarFullscreenSectionIdAtom, null);
+    const sections = [
+      { id: "sec_planning", name: "Planning", experimental_icon: "ListTodo" },
+      { id: "sec_building", name: "Building", experimental_icon: "ToolCase" },
+    ];
+
+    render(
+      <TooltipProvider>
+        <Provider store={store}>
+          <QueryClientProvider client={new QueryClient()}>
+            <MemoryRouter>
+              <ChronologicalSectionThreadSections
+                threadListState={{
+                  status: "ready",
+                  threads: [
+                    makeThread({ id: "thr_plan", sectionId: "sec_planning" }),
+                    makeThread({ id: "thr_build", sectionId: "sec_building" }),
+                  ],
+                }}
+                compareThreads={() => 0}
+                sections={sections}
+                collapsedThreadIds={new Set()}
+                collapsedEnvironmentIds={new Set()}
+                onToggleThreadCollapsed={vi.fn()}
+                onToggleEnvironmentCollapsed={vi.fn()}
+                topLevelSectionOrder={sections.map((section) =>
+                  buildSidebarEntitySectionId("section", section.id),
+                )}
+                onTopLevelSectionOrderChange={vi.fn()}
+                pinnedReorderPending={false}
+                pinnedThreads={[]}
+                onReorderPinnedThread={vi.fn()}
+              />
+            </MemoryRouter>
+          </QueryClientProvider>
+        </Provider>
+      </TooltipProvider>,
+    );
+
+    const planning = document.querySelector<HTMLElement>(
+      '[data-sidebar-section-id="sec_planning"]',
+    )!;
+    fireEvent.click(
+      within(planning).getByRole("button", { name: "Full Screen Section" }),
+    );
+    expect(store.get(sidebarFullscreenSectionIdAtom)).toBe("sec_planning");
+
+    act(() => {
+      setPluginSlotRegistrations("thread-organizer", {
+        homepageSections: [],
+        settingsSections: [],
+        navPanels: [],
+        threadPanelActions: [],
+        sidebarFooterActions: [],
+        sidebarSectionActions: [
+          {
+            id: "unrelated",
+            placement: "overflow",
+            presentation: () => ({ title: "Other action", icon: "Settings" }),
+            run: () => {},
+          },
+        ],
+        fileOpeners: [],
+        messageDirectives: [],
+      });
+    });
+
+    await waitFor(() => {
+      expect(store.get(sidebarFullscreenSectionIdAtom)).toBeNull();
+    });
     expect(
       document.querySelector('[data-sidebar-section-id="sec_building"]'),
     ).not.toBeNull();

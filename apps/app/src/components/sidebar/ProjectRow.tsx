@@ -1427,6 +1427,15 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     pluginActionContext,
     isTopLevelSection,
   );
+  useEffect(() => {
+    if (isFullscreen && !pluginSectionActions.hasPressed) {
+      setFullscreenSectionId(null);
+    }
+  }, [
+    isFullscreen,
+    pluginSectionActions.hasPressed,
+    setFullscreenSectionId,
+  ]);
   const { itemKeys, estimateRows, getNavigationEntries, alwaysMountedKeys } =
     useWindowedThreadItems({
       items: section.items,

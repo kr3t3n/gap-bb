@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-21T23:39:02Z",
+  "harnessSha256": "9f271db0111c3de06f6aa8ef2227fd68477b8ab80d7b9d520a029a234c447969",
+  "fixture": {
+    "project": "Automations project",
+    "query": "@automations",
+    "nativeWindowBounds": {
+      "x": 80,
+      "y": 80,
+      "width": 1280,
+      "height": 900
+    },
+    "fictional": true
+  },
+  "coreLayer": {
+    "baseline": "8a2150f448c263b51e0e3ce7e229c72e49c0d59d",
+    "candidate": "f1f39af8d30848e875ca50286f666b0ff35e2c68",
+    "providerFixtureCommit": "8ba72c3bf0d7279595439adf6b21251faeaea98a",
+    "baselineElapsedMs": 124301,
+    "candidateElapsedMs": 100472,
+    "beforeLog": "core-before-main.json",
+    "afterLog": "core-after-bottom.json"
+  },
+  "childLayer": {
+    "baseline": "f1f39af8d30848e875ca50286f666b0ff35e2c68",
+    "candidate": "6f636f5ceb00c2e1155eefd6b680021951d4c32f",
+    "baselineElapsedMs": 81358,
+    "candidateElapsedMs": 90050,
+    "beforeLog": "child-before-bottom.json",
+    "afterLog": "child-after-child.json"
+  },
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844, "deviceScaleFactor": 3 },
+    { "name": "small-narrow", "width": 768, "height": 900, "deviceScaleFactor": 2 },
+    { "name": "normal-desktop", "width": 1440, "height": 900, "deviceScaleFactor": 2 },
+    { "name": "very-large-desktop", "width": 3440, "height": 1440, "deviceScaleFactor": 1 }
+  ],
+  "transitionWidths": [389, 390, 391, 767, 768, 769, 1023, 1024, 1025, 1919, 1920, 1921],
+  "cyclesPerRevision": 5,
+  "result": "PASS"
+}

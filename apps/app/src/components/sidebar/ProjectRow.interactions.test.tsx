@@ -367,7 +367,7 @@ describe("ProjectRow interactions", () => {
         sidebarSectionActions: [
           {
             id: "unrelated",
-            placement: "overflow",
+            placement: "menu",
             presentation: () => ({ title: "Other action", icon: "Settings" }),
             run: () => {},
           },

@@ -24,6 +24,7 @@ import {
 } from "./core.js";
 
 const CONFIG_KEY = "workflow-config:v1";
+const PENDING_CONFIG_OPERATION_KEY = "workflow-config-operation:v1";
 const THREAD_STATE_PREFIX = "thread:v3:";
 const LEGACY_THREAD_STATE_PREFIX = "thread:v1:";
 const THREAD_LIST_PAGE_SIZE = 100;
@@ -52,6 +53,21 @@ const workflowConfigSchema = editableWorkflowConfigSchema.extend({
   ),
 });
 
+const pendingConfigOperationSchema = z
+  .object({
+    version: z.literal(1),
+    nextConfig: workflowConfigSchema,
+    removedStages: z.array(
+      z
+        .object({
+          key: z.string().min(1),
+          sectionId: z.string().min(1).nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 export const rpcContract = defineRpcContract({
   getConfig: {
     input: z.object({}).strict(),
@@ -76,6 +92,8 @@ interface ThreadWorkflowState {
   rememberedStageKey: string;
   version: 3;
 }
+
+type PendingConfigOperation = z.infer<typeof pendingConfigOperationSchema>;
 
 function threadStateKey(threadId: string): string {
   return `${THREAD_STATE_PREFIX}${threadId}`;
@@ -109,31 +127,35 @@ function sectionMatchesName(section: Section, name: string): boolean {
   );
 }
 
-export default function plugin(bb: BbPluginApi): void {
+export default async function plugin(bb: BbPluginApi): Promise<void> {
   let configSnapshot = cloneWorkflowConfig(DEFAULT_WORKFLOW_CONFIG);
-  let ready: Promise<void> = Promise.resolve();
   let disposed = false;
   const queues = new Map<string, Promise<void>>();
   let configQueue: Promise<void> = Promise.resolve();
 
-  function enqueue(threadId: string, work: () => Promise<void>): Promise<void> {
+  function enqueue(
+    threadId: string,
+    work: () => Promise<void>,
+    propagate = false,
+  ): Promise<void> {
     const previous = queues.get(threadId) ?? Promise.resolve();
-    const current = previous
+    const operation = previous
       .catch(() => undefined)
       .then(async () => {
-        await ready;
         if (!disposed) await work();
-      })
+      });
+    let tail: Promise<void>;
+    tail = operation
       .catch((error: unknown) => {
         bb.log.error(
           `thread=${threadId} action=reconcile-failed error=${describeError(error)}`,
         );
       })
       .finally(() => {
-        if (queues.get(threadId) === current) queues.delete(threadId);
+        if (queues.get(threadId) === tail) queues.delete(threadId);
       });
-    queues.set(threadId, current);
-    return current;
+    queues.set(threadId, tail);
+    return propagate ? operation : tail;
   }
 
   async function ensureWorkflowSections(
@@ -193,13 +215,27 @@ export default function plugin(bb: BbPluginApi): void {
   }
 
   async function loadConfig(): Promise<void> {
+    const pendingResult = pendingConfigOperationSchema.safeParse(
+      await bb.storage.kv.get<unknown>(PENDING_CONFIG_OPERATION_KEY),
+    );
+    const pending = pendingResult.success ? pendingResult.data : null;
     const stored = parseWorkflowConfig(
       await bb.storage.kv.get<unknown>(CONFIG_KEY),
     );
     configSnapshot = await ensureWorkflowSections(
-      stored ?? cloneWorkflowConfig(DEFAULT_WORKFLOW_CONFIG),
+      pending?.nextConfig ??
+        stored ??
+        cloneWorkflowConfig(DEFAULT_WORKFLOW_CONFIG),
     );
     await bb.storage.kv.set(CONFIG_KEY, configSnapshot);
+    if (pending !== null) {
+      const resumable = {
+        ...pending,
+        nextConfig: cloneWorkflowConfig(configSnapshot),
+      } satisfies PendingConfigOperation;
+      await bb.storage.kv.set(PENDING_CONFIG_OPERATION_KEY, resumable);
+      await finishConfigOperation(resumable);
+    }
     bb.realtime.publish("workflow-config-changed", {
       version: configSnapshot.version,
     });
@@ -341,11 +377,64 @@ export default function plugin(bb: BbPluginApi): void {
     return result;
   }
 
-  async function reconcileExisting(signal?: AbortSignal): Promise<void> {
+  async function reconcileExisting(
+    signal?: AbortSignal,
+    propagate = false,
+  ): Promise<void> {
     for (const thread of await listManageableThreads(signal)) {
       if (signal?.aborted) return;
-      await reconcileThread(thread.id);
+      await enqueue(thread.id, () => reconcileThread(thread.id), propagate);
     }
+  }
+
+  async function finishConfigOperation(
+    operation: PendingConfigOperation,
+  ): Promise<void> {
+    configSnapshot = cloneWorkflowConfig(operation.nextConfig);
+    await bb.storage.kv.set(CONFIG_KEY, configSnapshot);
+    const removedKeys = new Set(
+      operation.removedStages.map((stage) => stage.key),
+    );
+
+    for (const listedThread of await listManageableThreads()) {
+      await enqueue(
+        listedThread.id,
+        async () => {
+          const thread = await bb.sdk.threads.get({
+            threadId: listedThread.id,
+          });
+          if (!isManageableThread(thread)) return;
+          const state = await readThreadState(thread);
+          if (removedKeys.has(state.rememberedStageKey)) {
+            state.rememberedStageKey = firstWorkflowStage(configSnapshot).key;
+            await saveThreadState(thread.id, state);
+          }
+          await reconcileThread(thread.id);
+        },
+        true,
+      );
+    }
+
+    const existingSectionIds = new Set(
+      (await bb.sdk.threadSections.experimental_listWithIcons()).map(
+        (section) => section.id,
+      ),
+    );
+    for (const stage of operation.removedStages) {
+      if (!stage.sectionId || !existingSectionIds.has(stage.sectionId)) {
+        continue;
+      }
+      await bb.sdk.threadSections.delete({ id: stage.sectionId });
+      existingSectionIds.delete(stage.sectionId);
+    }
+    await bb.storage.kv.delete(PENDING_CONFIG_OPERATION_KEY);
+  }
+
+  async function resumePendingConfigOperation(): Promise<void> {
+    const parsed = pendingConfigOperationSchema.safeParse(
+      await bb.storage.kv.get<unknown>(PENDING_CONFIG_OPERATION_KEY),
+    );
+    if (parsed.success) await finishConfigOperation(parsed.data);
   }
 
   async function saveConfig(
@@ -355,32 +444,34 @@ export default function plugin(bb: BbPluginApi): void {
     const operation = configQueue
       .catch(() => undefined)
       .then(async () => {
-        await ready;
+        await resumePendingConfigOperation();
         const previous = configSnapshot;
         const next = await ensureWorkflowSections(
           mergeEditableWorkflowConfig(previous, edited),
         );
         const nextKeys = new Set(next.stages.map((stage) => stage.key));
+        const nextSectionIds = new Set(
+          next.stages.flatMap((stage) =>
+            stage.sectionId === null ? [] : [stage.sectionId],
+          ),
+        );
         const removed = previous.stages.filter(
-          (stage) => stage.role === "stage" && !nextKeys.has(stage.key),
+          (stage) =>
+            stage.role === "stage" &&
+            !nextKeys.has(stage.key) &&
+            (stage.sectionId === null || !nextSectionIds.has(stage.sectionId)),
         );
 
-        configSnapshot = next;
-        await bb.storage.kv.set(CONFIG_KEY, configSnapshot);
-
-        for (const thread of await listManageableThreads()) {
-          const state = await readThreadState(thread);
-          if (removed.some((stage) => stage.key === state.rememberedStageKey)) {
-            state.rememberedStageKey = firstWorkflowStage(configSnapshot).key;
-            await saveThreadState(thread.id, state);
-          }
-          await reconcileThread(thread.id);
-        }
-
-        for (const stage of removed) {
-          if (!stage.sectionId) continue;
-          await bb.sdk.threadSections.delete({ id: stage.sectionId });
-        }
+        const pending = {
+          version: 1,
+          nextConfig: cloneWorkflowConfig(next),
+          removedStages: removed.map(({ key, sectionId }) => ({
+            key,
+            sectionId,
+          })),
+        } satisfies PendingConfigOperation;
+        await bb.storage.kv.set(PENDING_CONFIG_OPERATION_KEY, pending);
+        await finishConfigOperation(pending);
 
         bb.realtime.publish("workflow-config-changed", {
           version: configSnapshot.version,
@@ -392,9 +483,15 @@ export default function plugin(bb: BbPluginApi): void {
     return result;
   }
 
+  try {
+    await loadConfig();
+  } catch (error) {
+    bb.log.error(`action=workflow-load-failed error=${describeError(error)}`);
+    throw error;
+  }
+
   bb.rpc.register(rpcContract, {
-    async getConfig() {
-      await ready;
+    getConfig() {
       return cloneWorkflowConfig(configSnapshot);
     },
     saveConfig,
@@ -411,7 +508,6 @@ export default function plugin(bb: BbPluginApi): void {
       },
     ],
     async run(argv, context) {
-      await ready;
       if (argv[0] !== "phase" || !argv[1]) {
         return {
           exitCode: 2,
@@ -444,7 +540,18 @@ export default function plugin(bb: BbPluginApi): void {
       if (!isManageableThread(thread)) {
         return { exitCode: 2, stderr: "This thread cannot be organized.\n" };
       }
-      await enqueue(thread.id, () => reconcileThread(thread.id, stage.key));
+      try {
+        await enqueue(
+          thread.id,
+          () => reconcileThread(thread.id, stage.key),
+          true,
+        );
+      } catch (error) {
+        return {
+          exitCode: 1,
+          stderr: `Could not set the workflow stage: ${describeError(error)}\n`,
+        };
+      }
       return {
         exitCode: 0,
         stdout: `Set ${thread.id} workflow stage to ${stage.title}.\n`,
@@ -462,14 +569,12 @@ export default function plugin(bb: BbPluginApi): void {
     }
     return {
       tools: [],
-      skills: [
-        {
-          name: "thread-phase-organizer",
-          slots: {
-            workflow: buildWorkflowSkillSlot(configSnapshot),
-          },
+      skills: ["thread-phase-organizer"],
+      experimental_skillSlots: {
+        "thread-phase-organizer": {
+          workflow: buildWorkflowSkillSlot(configSnapshot),
         },
-      ],
+      },
     };
   });
 
@@ -501,7 +606,6 @@ export default function plugin(bb: BbPluginApi): void {
 
   bb.background.service("workflow-reconciliation", {
     async start(signal) {
-      await ready;
       while (!signal.aborted) {
         await reconcileExisting(signal);
         if (!signal.aborted) {
@@ -515,11 +619,6 @@ export default function plugin(bb: BbPluginApi): void {
     disposed = true;
     unsubscribe();
     await Promise.allSettled([...queues.values(), configQueue]);
-  });
-
-  ready = loadConfig().catch((error: unknown) => {
-    bb.log.error(`action=workflow-load-failed error=${describeError(error)}`);
-    throw error;
   });
 }
 

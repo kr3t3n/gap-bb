@@ -400,11 +400,23 @@ export function WorkflowSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const editRevisionRef = useRef(0);
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
 
   const load = useCallback(async () => {
+    if (dirtyRef.current || savingRef.current) return;
+    const requestedRevision = editRevisionRef.current;
     setError(null);
     try {
       const full = await rpc.call("getConfig", {});
+      if (
+        dirtyRef.current ||
+        savingRef.current ||
+        editRevisionRef.current !== requestedRevision
+      ) {
+        return;
+      }
       setConfig(editableWorkflowConfig(full));
       cacheWorkflowConfig(full);
     } catch (loadError) {
@@ -418,11 +430,17 @@ export function WorkflowSettings() {
     void load();
   }, [load]);
   useRealtime("workflow-config-changed", () => {
-    if (!saving) void load();
+    if (!dirtyRef.current && !savingRef.current) void load();
   });
 
-  const replaceStage = (index: number, stage: EditableWorkflowStage) => {
+  const markEdited = () => {
+    editRevisionRef.current += 1;
+    dirtyRef.current = true;
     setSaved(false);
+  };
+
+  const replaceStage = (index: number, stage: EditableWorkflowStage) => {
+    markEdited();
     setConfig((current) =>
       current === null
         ? null
@@ -441,7 +459,7 @@ export function WorkflowSettings() {
     const [stage] = stages.splice(from, 1);
     if (stage === undefined) return;
     stages.splice(Math.min(to, stages.length), 0, stage);
-    setSaved(false);
+    markEdited();
     setConfig({ ...config, stages });
   };
 
@@ -450,7 +468,7 @@ export function WorkflowSettings() {
     const stages = config.stages.filter(
       (_, stageIndex) => stageIndex !== index,
     );
-    setSaved(false);
+    markEdited();
     setConfig({ ...config, stages });
   };
 
@@ -461,7 +479,7 @@ export function WorkflowSettings() {
       title,
       config.stages.map((stage) => stage.key),
     );
-    setSaved(false);
+    markEdited();
     setConfig({
       ...config,
       stages: [
@@ -479,18 +497,24 @@ export function WorkflowSettings() {
 
   const save = async () => {
     if (config === null) return;
+    const submittedRevision = editRevisionRef.current;
+    const normalized = normalizeEditableWorkflowConfig(config);
+    savingRef.current = true;
     setSaving(true);
     setSaved(false);
     setError(null);
     try {
-      const normalized = normalizeEditableWorkflowConfig(config);
       const full = await rpc.call("saveConfig", normalized);
-      setConfig(editableWorkflowConfig(full));
       cacheWorkflowConfig(full);
-      setSaved(true);
+      if (editRevisionRef.current === submittedRevision) {
+        dirtyRef.current = false;
+        setConfig(editableWorkflowConfig(full));
+        setSaved(true);
+      }
     } catch (saveError) {
       setError(errorMessage(saveError));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -581,7 +605,8 @@ export function WorkflowSettings() {
 export default definePluginApp((app) => {
   app.contentScripts.register({
     id: "workflow-sidebar",
-    mount: ({ signal }) => mountThreadOrganizerSidebar({ signal }),
+    mount: ({ pluginId, signal }) =>
+      mountThreadOrganizerSidebar({ pluginId, signal }),
   });
 
   app.slots.settingsSection({

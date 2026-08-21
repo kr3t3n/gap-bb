@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { act, cleanup, fireEvent, within } from "@testing-library/react";
+import {
+  loadPluginApp,
+  mountPluginContentScripts,
+  renderSlot,
+} from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -28,6 +32,7 @@ function configuredWorkflow(): WorkflowConfig {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 describe("Thread Organizer app registration", () => {
@@ -46,6 +51,26 @@ describe("Thread Organizer app registration", () => {
         placement: "inline-preferred",
       }),
     ]);
+  });
+
+  it("uses the runtime plugin id when its sidebar controller loads config", async () => {
+    const app = await loadApp();
+    const fetchMock = vi.fn(async (_input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: configuredWorkflow() }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "thread-organizer-example",
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/plugins/thread-organizer-example/rpc/getConfig",
+    );
+    await mounted.lifecycle.dispose();
   });
 
   it("toggles the direct action between Maximize2 and Minimize2", async () => {
@@ -120,6 +145,63 @@ describe("Thread Organizer app registration", () => {
 });
 
 describe("workflow settings", () => {
+  it("preserves newer edits while save and realtime responses are in flight", async () => {
+    const app = await loadApp();
+    const initial = configuredWorkflow();
+    let submitted: EditableWorkflowConfig | null = null;
+    let resolveSave!: (value: WorkflowConfig) => void;
+    const saveResponse = new Promise<WorkflowConfig>((resolve) => {
+      resolveSave = resolve;
+    });
+    const rendered = renderSlot<{}, typeof rpcContract>(
+      app.settingsSections[0]!,
+      {},
+      {
+        rpc: {
+          getConfig: async () => initial,
+          saveConfig: async (input) => {
+            submitted = input;
+            return saveResponse;
+          },
+        },
+      },
+    );
+
+    const title = (await rendered.findByLabelText(
+      "Planning section title",
+    )) as HTMLInputElement;
+    fireEvent.change(title, { target: { value: "Shaping" } });
+    fireEvent.click(rendered.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(submitted).not.toBeNull());
+
+    fireEvent.change(title, { target: { value: "Latest shaping" } });
+    await rendered.behavior.emitRealtime("workflow-config-changed", {
+      version: 1,
+    });
+    expect(
+      rendered.inspection.rpcCalls.filter(
+        ({ method }) => method === "getConfig",
+      ),
+    ).toHaveLength(1);
+
+    const saved = submitted!;
+    await act(async () => {
+      resolveSave({
+        ...saved,
+        stages: saved.stages.map((stage) => ({
+          ...stage,
+          sectionId: `sec_${stage.key}`,
+        })),
+      });
+      await saveResponse;
+    });
+
+    await vi.waitFor(() => expect(title.value).toBe("Latest shaping"));
+    expect(rendered.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(rendered.queryByRole("button", { name: "Saved" })).toBeNull();
+    rendered.lifecycle.unmount();
+  });
+
   it("lets Inbox change title and icon while locking its routing rule", async () => {
     const app = await loadApp();
     const initial = configuredWorkflow();

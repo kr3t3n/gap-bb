@@ -16,6 +16,7 @@ export const WORKFLOW_CONFIG_EVENT = "bb-thread-organizer-workflow-config";
 interface MountThreadOrganizerSidebarOptions {
   document?: Document;
   loadConfig?: () => Promise<WorkflowConfig>;
+  pluginId: string;
   signal: AbortSignal;
 }
 
@@ -55,9 +56,9 @@ export function cacheWorkflowConfig(
   );
 }
 
-async function fetchWorkflowConfig(): Promise<WorkflowConfig> {
+async function fetchWorkflowConfig(pluginId: string): Promise<WorkflowConfig> {
   const response = await fetch(
-    "/api/v1/plugins/thread-organizer/rpc/getConfig",
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/getConfig`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -230,7 +231,8 @@ function mountSidebarController(
 
 export function mountThreadOrganizerSidebar({
   document: targetDocument = document,
-  loadConfig = fetchWorkflowConfig,
+  loadConfig,
+  pluginId,
   signal,
 }: MountThreadOrganizerSidebarOptions): () => void {
   const view = targetDocument.defaultView;
@@ -282,7 +284,7 @@ export function mountThreadOrganizerSidebar({
     subtree: true,
   });
   mountSidebars();
-  void loadConfig()
+  void (loadConfig ?? (() => fetchWorkflowConfig(pluginId)))()
     .then((loaded) => {
       if (!signal.aborted) updateConfig(loaded);
     })

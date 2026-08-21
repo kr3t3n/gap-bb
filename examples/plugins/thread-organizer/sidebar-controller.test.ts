@@ -73,6 +73,7 @@ function mount(config = workflow()) {
   const controller = new AbortController();
   mountThreadOrganizerSidebar({
     document,
+    pluginId: "thread-organizer-example",
     signal: controller.signal,
     loadConfig: async () => config,
   });

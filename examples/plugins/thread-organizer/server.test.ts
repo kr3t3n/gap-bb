@@ -137,6 +137,14 @@ function createHarness(options: { legacyPlanning?: boolean } = {}) {
       return thread;
     },
   );
+  const getThread = vi.fn(async ({ threadId }: { threadId: string }) => {
+    if (threadId !== thread.id) throw new Error("unknown test thread");
+    return thread;
+  });
+  const listThreads = vi.fn(async () => [thread]);
+  const listSections = vi.fn(async () =>
+    sections.map((section) => ({ ...section })),
+  );
 
   const host = createFakePluginHost({
     pluginId: "thread-organizer",
@@ -162,16 +170,12 @@ function createHarness(options: { legacyPlanning?: boolean } = {}) {
       threadSections: {
         create,
         delete: deleteSection,
-        experimental_listWithIcons: async () =>
-          sections.map((section) => ({ ...section })),
+        experimental_listWithIcons: listSections,
         update: updateSection,
       },
       threads: {
-        get: async ({ threadId }: { threadId: string }) => {
-          if (threadId !== thread.id) throw new Error("unknown test thread");
-          return thread;
-        },
-        list: async () => [thread],
+        get: getThread,
+        list: listThreads,
         update: updateThread,
       },
     },
@@ -181,6 +185,9 @@ function createHarness(options: { legacyPlanning?: boolean } = {}) {
     ...host,
     create,
     deleteSection,
+    getThread,
+    listSections,
+    listThreads,
     updateSection,
     updateThread,
     current: () => thread,
@@ -204,9 +211,32 @@ async function configFor(
 }
 
 describe("Thread Organizer server", () => {
+  it("does not activate agent configuration before saved workflow initialization finishes", async () => {
+    const organizer = createHarness();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    organizer.listSections.mockImplementationOnce(async () => {
+      await blocked;
+      return [];
+    });
+
+    const activation = plugin(organizer.bb);
+    expect(
+      organizer.harness.inspection.registrations.agentConfigurationProvider,
+    ).toBeNull();
+    release();
+    await activation;
+    expect(
+      organizer.harness.inspection.registrations.agentConfigurationProvider,
+    ).not.toBeNull();
+    await organizer.harness.lifecycle.dispose();
+  });
+
   it("registers its workflow surfaces and creates every default native section", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const config = await configFor(organizer);
 
     expect(organizer.harness.inspection.registrations.cli?.name).toBe(
@@ -236,7 +266,7 @@ describe("Thread Organizer server", () => {
 
   it("migrates an emoji-prefixed default in place and preserves its id", async () => {
     const organizer = createHarness({ legacyPlanning: true });
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const config = await configFor(organizer);
     const planning = config.stages.find((stage) => stage.key === "planning")!;
 
@@ -253,7 +283,7 @@ describe("Thread Organizer server", () => {
 
   it("applies running, unread, and read precedence without classifying text", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const config = await configFor(organizer);
     const sectionId = (key: string) =>
       config.stages.find((stage) => stage.key === key)!.sectionId;
@@ -288,7 +318,7 @@ describe("Thread Organizer server", () => {
 
   it("remembers a user move made while unread, but keeps the row in Inbox", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const config = await configFor(organizer);
     const sectionId = (key: string) =>
       config.stages.find((stage) => stage.key === key)!.sectionId;
@@ -326,7 +356,7 @@ describe("Thread Organizer server", () => {
 
   it("moves explicitly with dynamic CLI keys and never accepts Inbox", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const config = await configFor(organizer);
     organizer.setThread({ status: "active" });
 
@@ -349,9 +379,72 @@ describe("Thread Organizer server", () => {
     await organizer.harness.lifecycle.dispose();
   });
 
+  it("returns a CLI failure when the explicit move cannot be reconciled", async () => {
+    const organizer = createHarness();
+    await plugin(organizer.bb);
+    organizer.setThread({ status: "active" });
+    organizer.updateThread.mockRejectedValueOnce(new Error("update failed"));
+
+    const result = await organizer.harness.behavior.runCli(
+      ["phase", "on-hold"],
+      { threadId: "thr_test" },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: expect.stringContaining("update failed"),
+    });
+    expect(result.stdout).not.toContain("Set thr_test workflow stage");
+    await organizer.harness.lifecycle.dispose();
+  });
+
+  it("serializes configuration reconciliation before a newer explicit move", async () => {
+    const organizer = createHarness();
+    await plugin(organizer.bb);
+    const current = await configFor(organizer);
+    const planning = current.stages.find((stage) => stage.key === "planning")!;
+    organizer.setThread({
+      status: "active",
+      sectionId: planning.sectionId,
+    });
+    let release!: () => void;
+    let markStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const staleSnapshot = organizer.current();
+    organizer.getThread.mockImplementationOnce(async () => {
+      markStarted();
+      await blocked;
+      return staleSnapshot;
+    });
+    const edited = editableWorkflowConfig(current);
+    edited.stages[1] = {
+      ...edited.stages[1]!,
+      rule: "Updated while an explicit move is queued.",
+    };
+
+    const save = organizer.harness.behavior.callRpc("saveConfig", edited);
+    await started;
+    const move = organizer.harness.behavior.runCli(["phase", "on-hold"], {
+      threadId: "thr_test",
+    });
+    release();
+    await Promise.all([save, move]);
+
+    expect(organizer.current().sectionId).toBe(
+      current.stages.find((stage) => stage.key === "on-hold")!.sectionId,
+    );
+    await organizer.harness.lifecycle.dispose();
+  });
+
   it("saves Inbox presentation and custom rules into the next agent session", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const current = await configFor(organizer);
     const edited = editableWorkflowConfig(current);
     edited.stages[0] = {
@@ -381,19 +474,21 @@ describe("Thread Organizer server", () => {
     expect(configuration.skills).toEqual(["thread-phase-organizer"]);
     expect(configuration.instructions).toBeNull();
     expect(
-      configuration.skillSlots["thread-phase-organizer"]?.workflow,
+      configuration.experimental_skillSlots?.["thread-phase-organizer"]
+        ?.workflow,
     ).toContain(
       "| planning | Shaping | Clarifying the outcome and constraints. |",
     );
     expect(
-      configuration.skillSlots["thread-phase-organizer"]?.workflow,
+      configuration.experimental_skillSlots?.["thread-phase-organizer"]
+        ?.workflow,
     ).toContain("**Needs Me** is the protected Inbox section");
     await organizer.harness.lifecycle.dispose();
   });
 
   it("migrates remembered work before deleting a removed stage", async () => {
     const organizer = createHarness();
-    plugin(organizer.bb);
+    await plugin(organizer.bb);
     const current = await configFor(organizer);
     organizer.setThread({ status: "active" });
     await organizer.harness.behavior.runCli(["phase", "handoff"], {
@@ -414,4 +509,51 @@ describe("Thread Organizer server", () => {
     });
     await organizer.harness.lifecycle.dispose();
   });
+
+  it.each(["migration", "deletion"] as const)(
+    "resumes a partially failed %s cleanup after plugin restart",
+    async (failure) => {
+      const organizer = createHarness();
+      await plugin(organizer.bb);
+      const current = await configFor(organizer);
+      organizer.setThread({ status: "active" });
+      await organizer.harness.behavior.runCli(["phase", "handoff"], {
+        threadId: "thr_test",
+      });
+      const handoff = current.stages.find((stage) => stage.key === "handoff")!;
+      const edited = editableWorkflowConfig(current);
+      edited.stages = edited.stages.filter((stage) => stage.key !== "handoff");
+      if (failure === "migration") {
+        organizer.updateThread.mockRejectedValueOnce(
+          new Error("migration failed"),
+        );
+      } else {
+        organizer.deleteSection.mockRejectedValueOnce(
+          new Error("deletion failed"),
+        );
+      }
+
+      await expect(
+        organizer.harness.behavior.callRpc("saveConfig", edited),
+      ).rejects.toThrow(`${failure} failed`);
+
+      const replacement = await organizer.harness.lifecycle.reload(plugin);
+      const recovered = (await replacement.harness.behavior.callRpc(
+        "getConfig",
+        {},
+      )) as WorkflowConfig;
+      expect(recovered.stages.some((stage) => stage.key === "handoff")).toBe(
+        false,
+      );
+      expect(
+        organizer
+          .sections()
+          .some((section) => section.id === handoff.sectionId),
+      ).toBe(false);
+      expect(organizer.current().sectionId).toBe(
+        recovered.stages.find((stage) => stage.key === "planning")!.sectionId,
+      );
+      await replacement.harness.lifecycle.dispose();
+    },
+  );
 });

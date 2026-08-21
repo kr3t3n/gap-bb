@@ -22,11 +22,18 @@ import {
   listAutomationsForProject,
   listAutomationRuns,
   migrations,
+  parseAutomationExecution,
   setAutomationEnabled,
   setAutomationRunThread,
   AUTOMATION_RETRY_BASE_MS,
   type Db,
 } from "./data.js";
+import {
+  AUTOMATION_PROMPT_MAX_LENGTH,
+  automationExecutionSchema,
+  createAutomationInputSchema,
+  updateAutomationInputSchema,
+} from "./rpc-types.js";
 import { ingestLegacyImport } from "./legacy-import.js";
 import {
   computeInitialNextRunAt,
@@ -1449,6 +1456,294 @@ describe("automation CLI --script-file", () => {
     } finally {
       await t.cleanup();
     }
+  });
+});
+
+describe("automation CLI length caps (#2166)", () => {
+  // Regression for get-bb/bb#2166: the CLI skipped the request-side length
+  // caps, so `update --prompt <over-cap>` wrote the row and only failed when
+  // the stored row was re-parsed. Every later list/show/update for the project
+  // then failed with the same `too_big` issue. Caps must be enforced at the
+  // argv boundary before anything is persisted, and rows that already exceed a
+  // cap must stay readable and repairable.
+  const overCapPrompt = "x".repeat(AUTOMATION_PROMPT_MAX_LENGTH + 39);
+  const ctx = { cwd: "/", threadId: undefined } as never;
+
+  async function setup() {
+    const db = createTestDb();
+    const pluginDataDir = await mkdtemp(join(tmpdir(), "bb-2166-data-"));
+    const warnings: string[] = [];
+    const serviceBb = createAutomationServiceBb();
+    const service = createAutomationService({
+      bb: {
+        ...serviceBb,
+        log: {
+          ...serviceBb.log,
+          warn: (message: string) => {
+            warnings.push(message);
+          },
+        },
+      },
+      db,
+      pluginDataDir,
+      serverUrl: "http://127.0.0.1:1",
+    });
+    let cli: PluginCliRegistration | undefined;
+    registerAutomationCli({
+      bb: {
+        sdk: { ...serviceBb.sdk, hosts: { list: async () => [] } } as never,
+        cli: {
+          register: (registration) => {
+            cli = registration;
+          },
+        },
+      },
+      service,
+    });
+    if (!cli) throw new Error("automation CLI was not registered");
+    return {
+      cli,
+      db,
+      service,
+      pluginDataDir,
+      warnings,
+      async cleanup() {
+        await rm(pluginDataDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  async function createAgent(cli: PluginCliRegistration): Promise<string> {
+    const created = await cli.run(
+      [
+        "create",
+        "--project",
+        "proj_test",
+        "--name",
+        "issue-2166",
+        "--cron",
+        "*/5 * * * *",
+        "--timezone",
+        "UTC",
+        "--prompt",
+        "Reply only with ok.",
+        "--provider",
+        "codex",
+        "--model",
+        "gpt-5",
+      ],
+      ctx,
+    );
+    expect(created.exitCode, created.stderr).toBe(0);
+    const id = /Automation created: (\S+)/.exec(created.stdout ?? "")?.[1];
+    if (!id) throw new Error(`no id in: ${created.stdout}`);
+    return id;
+  }
+
+  function storedPrompt(db: Db, id: string): string {
+    const row = getAutomation(db, id);
+    if (!row) throw new Error(`missing automation ${id}`);
+    const execution = parseAutomationExecution(row.execution);
+    if (execution.mode !== "agent") throw new Error("not an agent automation");
+    return execution.prompt;
+  }
+
+  it("rejects an over-cap --prompt on update without persisting it", async () => {
+    const t = await setup();
+    try {
+      const id = await createAgent(t.cli);
+      const update = await t.cli.run(
+        ["update", id, "--project", "proj_test", "--prompt", overCapPrompt],
+        ctx,
+      );
+      expect(update.exitCode).toBe(1);
+      expect(update.stderr).toContain("too_big");
+      expect(storedPrompt(t.db, id)).toBe("Reply only with ok.");
+
+      // The project is still fully usable afterwards.
+      const list = await t.cli.run(["list", "--project", "proj_test"], ctx);
+      expect(list.exitCode, list.stderr).toBe(0);
+      expect(list.stdout).toContain(id);
+      const show = await t.cli.run(["show", id, "--project", "proj_test"], ctx);
+      expect(show.exitCode, show.stderr).toBe(0);
+      const repair = await t.cli.run(
+        ["update", id, "--project", "proj_test", "--prompt", "short again"],
+        ctx,
+      );
+      expect(repair.exitCode, repair.stderr).toBe(0);
+      expect(storedPrompt(t.db, id)).toBe("short again");
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("rejects an over-cap --prompt on create without persisting it", async () => {
+    const t = await setup();
+    try {
+      const created = await t.cli.run(
+        [
+          "create",
+          "--project",
+          "proj_test",
+          "--name",
+          "issue-2166",
+          "--in",
+          "30m",
+          "--prompt",
+          overCapPrompt,
+          "--provider",
+          "codex",
+          "--model",
+          "gpt-5",
+        ],
+        ctx,
+      );
+      expect(created.exitCode).toBe(1);
+      expect(created.stderr).toContain("too_big");
+      expect(t.service.list({ projectId: "proj_test" })).toEqual([]);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("rejects an over-cap inline --script on create and update before writing the snapshot", async () => {
+    const t = await setup();
+    try {
+      const overCapScript = `#!/bin/sh\n# ${"y".repeat(262_144)}\n`;
+      const created = await t.cli.run(
+        [
+          "create",
+          "--project",
+          "proj_test",
+          "--name",
+          "issue-2166",
+          "--in",
+          "30m",
+          "--script",
+          overCapScript,
+        ],
+        ctx,
+      );
+      expect(created.exitCode).toBe(1);
+      expect(created.stderr).toContain("too_big");
+      expect(t.service.list({ projectId: "proj_test" })).toEqual([]);
+      await expect(readdir(join(t.pluginDataDir, "scripts"))).rejects.toThrow();
+
+      const id = await createAgent(t.cli);
+      const update = await t.cli.run(
+        ["update", id, "--project", "proj_test", "--script", overCapScript],
+        ctx,
+      );
+      expect(update.exitCode).toBe(1);
+      expect(update.stderr).toContain("too_big");
+      expect(storedPrompt(t.db, id)).toBe("Reply only with ok.");
+      await expect(readdir(join(t.pluginDataDir, "scripts"))).rejects.toThrow();
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("keeps an already-stored over-cap prompt readable and repairable", async () => {
+    // A user who hit the bug before the fix has such a row on disk.
+    const t = await setup();
+    try {
+      const healthyId = await createAgent(t.cli);
+      const brokenId = await createAgent(t.cli);
+      t.db
+        .prepare(
+          "UPDATE automations SET execution = json_set(execution, '$.prompt', ?) WHERE id = ?",
+        )
+        .run(overCapPrompt, brokenId);
+      expect(storedPrompt(t.db, brokenId)).toBe(overCapPrompt);
+
+      const list = await t.cli.run(["list", "--project", "proj_test"], ctx);
+      expect(list.exitCode, list.stderr).toBe(0);
+      expect(list.stdout).toContain(healthyId);
+      expect(list.stdout).toContain(brokenId);
+
+      const show = await t.cli.run(
+        ["show", brokenId, "--project", "proj_test"],
+        ctx,
+      );
+      expect(show.exitCode, show.stderr).toBe(0);
+
+      const repair = await t.cli.run(
+        ["update", brokenId, "--project", "proj_test", "--prompt", "short"],
+        ctx,
+      );
+      expect(repair.exitCode, repair.stderr).toBe(0);
+      expect(storedPrompt(t.db, brokenId)).toBe("short");
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("list skips a malformed row instead of failing the whole project", async () => {
+    const t = await setup();
+    try {
+      const healthyId = await createAgent(t.cli);
+      const brokenId = await createAgent(t.cli);
+      t.db
+        .prepare("UPDATE automations SET execution = ? WHERE id = ?")
+        .run(JSON.stringify({ mode: "agent" }), brokenId);
+
+      const listed = t.service.list({ projectId: "proj_test" });
+      expect(listed.map((automation) => automation.id)).toEqual([healthyId]);
+      expect(t.warnings.join("\n")).toContain(
+        `Skipping malformed automation ${brokenId}`,
+      );
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("the RPC request schemas still enforce the caps", () => {
+    const base = {
+      projectId: "proj_test",
+      name: "issue-2166",
+      trigger: oneShotTrigger(),
+      origin: "human" as const,
+    };
+    const agentExecution = {
+      mode: "agent" as const,
+      providerId: "codex",
+      model: "gpt-5",
+      permissionMode: "auto" as const,
+      environment: { type: "project-default" as const },
+    };
+    expect(
+      createAutomationInputSchema.safeParse({
+        ...base,
+        execution: { ...agentExecution, prompt: overCapPrompt },
+      }).success,
+    ).toBe(false);
+    expect(
+      createAutomationInputSchema.safeParse({
+        ...base,
+        execution: { mode: "script", script: "z".repeat(262_145) },
+      }).success,
+    ).toBe(false);
+    expect(
+      updateAutomationInputSchema.safeParse({
+        projectId: "proj_test",
+        automationId: "auto_1",
+        agent: { prompt: overCapPrompt },
+      }).success,
+    ).toBe(false);
+    expect(
+      updateAutomationInputSchema.safeParse({
+        projectId: "proj_test",
+        automationId: "auto_1",
+        execution: { ...agentExecution, prompt: overCapPrompt },
+      }).success,
+    ).toBe(false);
+    // The stored shape does not carry the caps.
+    expect(
+      automationExecutionSchema.safeParse({
+        ...agentExecution,
+        prompt: overCapPrompt,
+      }).success,
+    ).toBe(true);
   });
 });
 

@@ -428,9 +428,19 @@ export function createAutomationService(args: {
     },
 
     list(input) {
-      return listAutomationsForProject(db, input.projectId).map((row) =>
-        toStoredAutomationResponse(pluginDataDir, row),
-      );
+      const automations: AutomationResponse[] = [];
+      for (const row of listAutomationsForProject(db, input.projectId)) {
+        try {
+          automations.push(toStoredAutomationResponse(pluginDataDir, row));
+        } catch (error) {
+          bb.log.warn(
+            `Skipping malformed automation ${row.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      return automations;
     },
 
     get(input) {

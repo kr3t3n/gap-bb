@@ -119,10 +119,16 @@ export const automationTriggerSchema = z.discriminatedUnion("triggerType", [
 ]);
 export type AutomationTrigger = z.infer<typeof automationTriggerSchema>;
 
+/**
+ * Stored/response execution shape. Length caps are request policy and live
+ * only on the `*RequestSchema` variants below: a cap on the stored shape would
+ * make an already-persisted over-cap row unreadable (list/show fail) and
+ * unrepairable (update parses the stored row before it writes). See #2166.
+ */
 const automationAgentExecutionSchema = z
   .object({
     mode: z.literal("agent"),
-    prompt: z.string().min(1).max(AUTOMATION_PROMPT_MAX_LENGTH),
+    prompt: z.string().min(1),
     providerId: z.string().min(1),
     model: z.string().min(1),
     permissionMode: permissionModeSchema,
@@ -134,12 +140,8 @@ const automationAgentExecutionSchema = z
 const automationScriptExecutionSchema = z
   .object({
     mode: z.literal("script"),
-    script: z.string().min(1).max(AUTOMATION_SCRIPT_MAX_LENGTH).optional(),
-    scriptFile: z
-      .string()
-      .min(1)
-      .max(AUTOMATION_SCRIPT_FILE_MAX_LENGTH)
-      .optional(),
+    script: z.string().min(1).optional(),
+    scriptFile: z.string().min(1).optional(),
     interpreter: automationScriptInterpreterSchema.optional(),
     timeoutMs: z
       .number()
@@ -173,9 +175,41 @@ function requireExactlyOneScriptSource(
   }
 }
 
-const automationExecutionRequestSchema = automationExecutionSchema.superRefine(
-  requireExactlyOneScriptSource,
-);
+export const automationPromptRequestSchema = z
+  .string()
+  .min(1)
+  .max(AUTOMATION_PROMPT_MAX_LENGTH);
+export const automationScriptRequestSchema = z
+  .string()
+  .min(1)
+  .max(AUTOMATION_SCRIPT_MAX_LENGTH);
+
+/**
+ * Request-side execution schemas: the stored shape plus the length caps. Every
+ * entry point that accepts execution input (RPC routes and the CLI argv
+ * boundary) parses with these before anything is persisted.
+ */
+export const automationAgentExecutionRequestSchema =
+  automationAgentExecutionSchema
+    .extend({ prompt: automationPromptRequestSchema })
+    .strict();
+const automationScriptExecutionRequestSchema = automationScriptExecutionSchema
+  .extend({
+    script: automationScriptRequestSchema.optional(),
+    scriptFile: z
+      .string()
+      .min(1)
+      .max(AUTOMATION_SCRIPT_FILE_MAX_LENGTH)
+      .optional(),
+  })
+  .strict();
+
+const automationExecutionRequestSchema = z
+  .discriminatedUnion("mode", [
+    automationAgentExecutionRequestSchema,
+    automationScriptExecutionRequestSchema,
+  ])
+  .superRefine(requireExactlyOneScriptSource);
 
 /**
  * Execution as returned to clients. Script automations add `storedScriptPath`:
@@ -205,9 +239,9 @@ const agentExecutionTargetSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 
-const agentExecutionUpdateSchema = z
+export const agentExecutionUpdateSchema = z
   .object({
-    prompt: z.string().min(1).max(AUTOMATION_PROMPT_MAX_LENGTH).optional(),
+    prompt: automationPromptRequestSchema.optional(),
     model: z.string().min(1).optional(),
     permissionMode: permissionModeSchema.optional(),
     target: agentExecutionTargetSchema.optional(),

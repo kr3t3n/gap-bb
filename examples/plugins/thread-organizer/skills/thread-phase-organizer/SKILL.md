@@ -1,6 +1,6 @@
 ---
 name: thread-phase-organizer
-description: Keep the current root bb thread in the configured workflow stage matching its present work. Use when an agent starts work or clearly changes its primary kind of work.
+description: Keep the current root bb thread in the configured workflow stage matching its present primary activity. Use at every substantive task start, after resolving an indirect kickoff, after scope changes, before implementation, at implementation/validation transitions, and when handoff becomes primary. Classify the thread itself, never subjects merely mentioned inside it.
 ---
 
 # Thread Phase Organizer
@@ -8,6 +8,18 @@ description: Keep the current root bb thread in the configured workflow stage ma
 Keep this root thread in the workflow stage matching the work you are doing.
 Thread Organizer fills the generated workflow below from the user’s current
 saved settings whenever this agent session starts or resumes.
+
+## Understand the remembered stage
+
+Thread Organizer does not classify prompts. A new manageable root thread
+mechanically remembers the first configured non-Inbox workflow stage; with the
+default workflow below, that is Planning. This default or remembered value is
+storage state, not a semantic decision that the current work is planning.
+
+The remembered stage changes when the user moves the thread or when you run
+`bb organizer phase <stage-key>`. `update_plan` and other internal task plans do
+not move the bb workflow stage. Only `bb organizer phase` performs an
+agent-driven stage transition.
 
 ## Current workflow
 
@@ -26,21 +38,66 @@ saved settings whenever this agent session starts or resumes.
 
 <!-- bb:skill-slot workflow:end -->
 
-## Move the thread
+## Choose the subject correctly
 
-When the thread’s primary work changes, move the current thread before starting
-that work:
+A stage describes the current primary activity of this root thread as a whole.
+It does not describe the lifecycle of every idea, task, artifact, quotation, or
+future plan mentioned inside the thread.
+
+- Recording a deferred or paused feature while continuing to edit a spec is
+  still spec or planning work. The root thread is not on hold.
+- Writing about a handoff is not Handoff. Use a handoff-like stage only when
+  the current work is actually packaging context and evidence for another
+  owner.
+- Use an on-hold-like stage only when the whole root thread is intentionally
+  paused until later or until an external condition changes, with no other
+  meaningful work continuing now.
+
+Do not infer a transition from stage words in a title, old message, quoted
+text, document, task list, or plan item. Completing one bounded step or waiting
+for the user’s next message is not itself a stage change.
+
+## Re-evaluate at workflow checkpoints
+
+Re-evaluate the root thread’s primary activity at each of these checkpoints:
+
+1. At the start of every substantive task.
+2. Immediately after resolving an indirect kickoff such as “read this
+   brief/spec/issue/thread.” Read the referenced artifact first, then classify
+   the resolved next concrete action—not isolated words in the kickoff or the
+   artifact.
+3. After the user changes scope or direction.
+4. Before implementation begins. Move to the matching building-like stage
+   before changing code or product artifacts.
+5. When implementation transitions to testing, packaging a deliverable,
+   releasing, or deploying. Move to the matching testing/deploy-like stage.
+6. When failed validation makes implementation the next concrete action again.
+   Move from the testing/deploy-like stage back to the building-like stage
+   before fixing the failure.
+7. When packaging context and evidence for another owner becomes the primary
+   activity. Move to the matching handoff-like stage.
+
+At a checkpoint, use the stage whose rule describes the resolved next concrete
+action. If that is already the remembered stage, do not run a redundant move.
+
+## Move when the work changes
+
+When the root thread genuinely changes its primary activity, move it before
+starting that work:
 
 ```bash
 bb organizer phase <stage-key>
 ```
 
-Choose only a key from the current workflow table when the current work clearly
-matches that stage’s rule. Use the work you are actually doing and the context
-available in this thread; do not classify from isolated keywords in a title,
-old message, or quoted text. Inbox is system-managed and can’t be selected.
+Choose only a key from the current workflow table when the work you are about
+to do clearly matches that stage’s rule. Inbox is system-managed and can’t be
+selected.
 
 If several stages seem relevant, use the one describing the next concrete
 action. If you lack sufficient context, leave the remembered stage unchanged
-rather than inventing a transition. Do not create, rename, or delete native
-sections; the plugin reconciles them from the user’s settings.
+rather than inventing a transition. Do not move the thread merely to record an
+end state after finishing a step. If the user corrects a move, apply the
+correct stage immediately.
+
+Do not create, rename, or delete native sections; the plugin reconciles them
+from the user’s settings.

@@ -49,6 +49,10 @@ const stageRuleLayoutClass =
   "col-span-2 col-start-2 row-start-2 min-w-0 lg:col-span-1 lg:col-start-4 lg:row-start-1";
 const workflowSettingsDescription =
   "Rename, re-icon, reorder, and define the workflow your agents follow.";
+// Inter's capital R starts 180/2048 em inside its advance box. Hang only the
+// first line by that optical bound so its visible edge follows the list below.
+const workflowSettingsDescriptionClass =
+  "[text-indent:-0.088em] text-sm leading-5 text-muted-foreground";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -542,7 +546,7 @@ export function WorkflowSettings() {
     <div className="grid min-w-0 w-full max-w-3xl gap-4">
       <div className="flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3">
         <div className="min-w-60 flex-1">
-          <p className="pl-px text-sm leading-5 text-muted-foreground">
+          <p className={workflowSettingsDescriptionClass}>
             {workflowSettingsDescription}
           </p>
         </div>

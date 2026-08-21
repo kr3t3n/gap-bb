@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import * as core from "./core.js";
+
+const phaseOrganizerSkill = readFileSync(
+  new URL("./skills/thread-phase-organizer/SKILL.md", import.meta.url),
+  "utf8",
+);
 
 function editable() {
   return core.editableWorkflowConfig(
@@ -228,6 +234,43 @@ describe("agent guidance", () => {
     expect(core).not.toHaveProperty("classifyPhase");
     expect(core).not.toHaveProperty("deriveTaskTitle");
     expect(core).not.toHaveProperty("parsePhaseTarget");
+  });
+
+  it("resolves indirect kickoffs before moving into implementation", () => {
+    expect(phaseOrganizerSkill).toContain(
+      "Thread Organizer does not classify prompts.",
+    );
+    expect(phaseOrganizerSkill).toContain(
+      "mechanically remembers the first configured non-Inbox workflow stage",
+    );
+    expect(phaseOrganizerSkill).toMatch(
+      /This default or remembered value is\s+storage state, not a semantic decision/u,
+    );
+    expect(phaseOrganizerSkill).toContain(
+      "Immediately after resolving an indirect kickoff",
+    );
+    expect(phaseOrganizerSkill).toContain(
+      "Read the referenced artifact first, then classify",
+    );
+    expect(phaseOrganizerSkill).toContain("Before implementation begins.");
+    expect(phaseOrganizerSkill).toContain("resolved next concrete action");
+    expect(phaseOrganizerSkill).toContain("`update_plan`");
+    expect(phaseOrganizerSkill).toMatch(
+      /Only `bb organizer phase` performs an\s+agent-driven stage transition\./u,
+    );
+  });
+
+  it("requires transitions between implementation and validation", () => {
+    expect(phaseOrganizerSkill).toContain(
+      "When implementation transitions to testing, packaging a deliverable",
+    );
+    expect(phaseOrganizerSkill).toContain(
+      "Move to the matching testing/deploy-like stage.",
+    );
+    expect(phaseOrganizerSkill).toContain(
+      "When failed validation makes implementation the next concrete action again.",
+    );
+    expect(phaseOrganizerSkill).toContain("back to the building-like stage");
   });
 });
 

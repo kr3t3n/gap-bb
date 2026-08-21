@@ -18,6 +18,8 @@ package.
 - Inbox keeps that system behavior even when its visible title or icon changes.
 - Inbox starts expanded. Other configured sections start collapsed until the
   user changes their collapse state.
+- Reordering a non-Inbox stage in the native sidebar saves the same workflow
+  order used by plugin settings and future agent instructions.
 - Every native section header gets a direct Full Screen Section action whose
   pressed state stays visible until the user exits it.
 

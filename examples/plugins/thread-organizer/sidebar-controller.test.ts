@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_WORKFLOW_CONFIG,
   cloneWorkflowConfig,
+  mergeEditableWorkflowConfig,
+  type EditableWorkflowConfig,
   type WorkflowConfig,
 } from "./core.js";
 import {
@@ -69,13 +71,20 @@ function order(...ids: string[]): string[] {
   return ids.map((id) => `section:${id}`);
 }
 
-function mount(config = workflow()) {
+function mount(
+  config = workflow(),
+  saveConfig: (
+    edited: EditableWorkflowConfig,
+  ) => Promise<WorkflowConfig> = async (edited) =>
+    mergeEditableWorkflowConfig(config, edited),
+) {
   const controller = new AbortController();
   mountThreadOrganizerSidebar({
     document,
     pluginId: "thread-organizer-example",
     signal: controller.signal,
     loadConfig: async () => config,
+    saveConfig,
   });
   return controller;
 }
@@ -143,6 +152,121 @@ describe("workflow sidebar controller", () => {
         ),
       ),
     );
+    controller.abort();
+  });
+
+  it("keeps a workflow-stage order chosen in the native sidebar", async () => {
+    const config = workflow();
+    const saveConfig = vi.fn(async (edited: EditableWorkflowConfig) =>
+      mergeEditableWorkflowConfig(config, edited),
+    );
+    const inbox = section("sec_inbox", "Inbox", false);
+    const planning = section("sec_planning", "Planning", false);
+    const building = section("sec_building", "Building", false);
+    const testing = section(
+      "sec_testing-deploy",
+      "Testing / Deploy",
+      false,
+    );
+    const root = sidebar(inbox, planning, building, testing);
+    window.localStorage.setItem(
+      "bb.sidebar.manualSectionOrder",
+      JSON.stringify(
+        order(
+          "sec_inbox",
+          "sec_planning",
+          "sec_spec-review",
+          "sec_building",
+          "sec_testing-deploy",
+          "sec_handoff",
+          "sec_on-hold",
+        ),
+      ),
+    );
+    const controller = mount(config, saveConfig);
+    await vi.waitFor(() =>
+      expect(toggle(inbox).getAttribute("aria-expanded")).toBe("true"),
+    );
+
+    const chosen = order(
+      "sec_inbox",
+      "sec_building",
+      "sec_planning",
+      "sec_spec-review",
+      "sec_testing-deploy",
+      "sec_handoff",
+      "sec_on-hold",
+    );
+    window.localStorage.setItem(
+      "bb.sidebar.manualSectionOrder",
+      JSON.stringify(chosen),
+    );
+    root.insertBefore(building, planning);
+    await vi.waitFor(() => expect(saveConfig).toHaveBeenCalledOnce());
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("bb.sidebar.manualSectionOrder")!,
+      ),
+    ).toEqual(chosen);
+    expect(saveConfig.mock.calls[0]?.[0].stages.map((stage) => stage.key)).toEqual(
+      [
+        "inbox",
+        "building",
+        "planning",
+        "spec-review",
+        "testing-deploy",
+        "handoff",
+        "on-hold",
+      ],
+    );
+    controller.abort();
+  });
+
+  it("keeps the protected Inbox first when it is dragged", async () => {
+    const config = workflow();
+    const saveConfig = vi.fn(async (edited: EditableWorkflowConfig) =>
+      mergeEditableWorkflowConfig(config, edited),
+    );
+    const inbox = section("sec_inbox", "Inbox", false);
+    const planning = section("sec_planning", "Planning", false);
+    const root = sidebar(inbox, planning);
+    const configured = order(
+      "sec_inbox",
+      "sec_planning",
+      "sec_spec-review",
+      "sec_building",
+      "sec_testing-deploy",
+      "sec_handoff",
+      "sec_on-hold",
+    );
+    window.localStorage.setItem(
+      "bb.sidebar.manualSectionOrder",
+      JSON.stringify(configured),
+    );
+    const controller = mount(config, saveConfig);
+    await vi.waitFor(() =>
+      expect(toggle(inbox).getAttribute("aria-expanded")).toBe("true"),
+    );
+
+    window.localStorage.setItem(
+      "bb.sidebar.manualSectionOrder",
+      JSON.stringify([
+        configured[1],
+        configured[0],
+        ...configured.slice(2),
+      ]),
+    );
+    root.insertBefore(planning, inbox);
+
+    await vi.waitFor(() =>
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("bb.sidebar.manualSectionOrder")!,
+        ),
+      ).toEqual(configured),
+    );
+    expect(saveConfig).not.toHaveBeenCalled();
     controller.abort();
   });
 

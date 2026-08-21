@@ -1,6 +1,8 @@
 import {
   cloneWorkflowConfig,
+  editableWorkflowConfig,
   parseWorkflowConfig,
+  type EditableWorkflowConfig,
   type WorkflowConfig,
 } from "./core.js";
 
@@ -17,7 +19,13 @@ interface MountThreadOrganizerSidebarOptions {
   document?: Document;
   loadConfig?: () => Promise<WorkflowConfig>;
   pluginId: string;
+  saveConfig?: (config: EditableWorkflowConfig) => Promise<WorkflowConfig>;
   signal: AbortSignal;
+}
+
+interface SidebarController {
+  applyConfiguredOrder: () => void;
+  dispose: () => void;
 }
 
 function groupToggle(group: Element): HTMLButtonElement | null {
@@ -87,6 +95,97 @@ async function fetchWorkflowConfig(pluginId: string): Promise<WorkflowConfig> {
   return config;
 }
 
+async function saveWorkflowConfig(
+  pluginId: string,
+  config: EditableWorkflowConfig,
+): Promise<WorkflowConfig> {
+  const response = await fetch(
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/saveConfig`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Thread Organizer config save failed (${response.status})`,
+    );
+  }
+  const payload: unknown = await response.json();
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !("ok" in payload) ||
+    payload.ok !== true ||
+    !("result" in payload)
+  ) {
+    throw new Error("Thread Organizer returned an invalid config response");
+  }
+  const saved = parseWorkflowConfig(payload.result);
+  if (saved === null) {
+    throw new Error("Thread Organizer returned an invalid workflow config");
+  }
+  return saved;
+}
+
+function currentWorkflowSectionOrder(
+  sidebar: Element,
+  config: WorkflowConfig,
+): string[] | null {
+  const view = sidebar.ownerDocument.defaultView;
+  if (view === null) return null;
+  const raw = view.localStorage.getItem(MANUAL_SECTION_ORDER_STORAGE_KEY);
+  if (raw === null) return null;
+  let current: unknown;
+  try {
+    current = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (
+    !Array.isArray(current) ||
+    current.some((value) => typeof value !== "string")
+  ) {
+    return null;
+  }
+
+  const configuredSectionIds = new Set(
+    config.stages.flatMap((stage) =>
+      stage.sectionId === null ? [] : [stage.sectionId],
+    ),
+  );
+  const orderedSectionIds = (current as string[]).flatMap((orderId) => {
+    if (!orderId.startsWith("section:")) return [];
+    const sectionId = orderId.slice("section:".length);
+    return configuredSectionIds.has(sectionId) ? [sectionId] : [];
+  });
+  return orderedSectionIds.length === configuredSectionIds.size
+    ? orderedSectionIds
+    : null;
+}
+
+function configInSectionOrder(
+  config: WorkflowConfig,
+  sectionIds: readonly string[],
+): WorkflowConfig | null {
+  if (sectionIds.length !== config.stages.length) return null;
+  const stageBySectionId = new Map(
+    config.stages.flatMap((stage) =>
+      stage.sectionId === null ? [] : [[stage.sectionId, stage] as const],
+    ),
+  );
+  if (stageBySectionId.size !== config.stages.length) return null;
+  const stages = sectionIds.flatMap((sectionId) => {
+    const stage = stageBySectionId.get(sectionId);
+    return stage === undefined ? [] : [{ ...stage }];
+  });
+  if (stages.length !== config.stages.length || stages[0]?.role !== "inbox") {
+    return null;
+  }
+  return { ...config, stages };
+}
+
 function reorderWorkflowSections(
   sidebar: Element,
   config: WorkflowConfig,
@@ -150,9 +249,11 @@ function mountSidebarController(
   sidebar: Element,
   signal: AbortSignal,
   getConfig: () => WorkflowConfig | null,
-): () => void {
+  onStageOrderChange: (sectionIds: readonly string[]) => boolean,
+): SidebarController {
   const userExpansionBySectionId = new Map<string, boolean>();
   const pluginControls = new WeakSet<HTMLButtonElement>();
+  let applyConfiguredOrder = true;
   let scheduled = false;
 
   const reconcile = () => {
@@ -160,7 +261,24 @@ function mountSidebarController(
     if (signal.aborted || !sidebar.isConnected) return;
     const config = getConfig();
     if (config === null) return;
-    reorderWorkflowSections(sidebar, config);
+    if (applyConfiguredOrder) {
+      applyConfiguredOrder = false;
+      reorderWorkflowSections(sidebar, config);
+    } else {
+      const currentOrder = currentWorkflowSectionOrder(sidebar, config);
+      const configuredOrder = config.stages.flatMap((stage) =>
+        stage.sectionId === null ? [] : [stage.sectionId],
+      );
+      if (
+        currentOrder !== null &&
+        !currentOrder.every(
+          (sectionId, index) => sectionId === configuredOrder[index],
+        ) &&
+        !onStageOrderChange(currentOrder)
+      ) {
+        reorderWorkflowSections(sidebar, config);
+      }
+    }
     const inbox = config.stages.find((stage) => stage.role === "inbox");
     const configuredIds = new Set(
       config.stages.flatMap((stage) =>
@@ -187,6 +305,11 @@ function mountSidebarController(
     if (scheduled || signal.aborted) return;
     scheduled = true;
     queueMicrotask(reconcile);
+  };
+
+  const requestConfiguredOrder = () => {
+    applyConfiguredOrder = true;
+    schedule();
   };
 
   const recordUserToggle = (event: Event) => {
@@ -219,13 +342,22 @@ function mountSidebarController(
     childList: true,
     subtree: true,
   });
-  sidebar.addEventListener("thread-organizer-config-changed", schedule);
+  sidebar.addEventListener(
+    "thread-organizer-config-changed",
+    requestConfiguredOrder,
+  );
   reconcile();
 
-  return () => {
-    observer.disconnect();
-    sidebar.removeEventListener("click", recordUserToggle, true);
-    sidebar.removeEventListener("thread-organizer-config-changed", schedule);
+  return {
+    applyConfiguredOrder: requestConfiguredOrder,
+    dispose: () => {
+      observer.disconnect();
+      sidebar.removeEventListener("click", recordUserToggle, true);
+      sidebar.removeEventListener(
+        "thread-organizer-config-changed",
+        requestConfiguredOrder,
+      );
+    },
   };
 }
 
@@ -233,26 +365,18 @@ export function mountThreadOrganizerSidebar({
   document: targetDocument = document,
   loadConfig,
   pluginId,
+  saveConfig = (config) => saveWorkflowConfig(pluginId, config),
   signal,
 }: MountThreadOrganizerSidebarOptions): () => void {
   const view = targetDocument.defaultView;
   let config = view === null ? null : parsedCachedConfig(view);
-  const disposers = new Map<Element, () => void>();
+  const controllers = new Map<Element, SidebarController>();
+  let pendingSectionOrder: readonly string[] | null = null;
+  let savingSectionOrder = false;
 
-  const mountSidebars = () => {
-    for (const [sidebar, stop] of disposers) {
-      if (!sidebar.isConnected) {
-        stop();
-        disposers.delete(sidebar);
-      }
-    }
-    for (const sidebar of targetDocument.querySelectorAll(SIDEBAR_SELECTOR)) {
-      if (!disposers.has(sidebar)) {
-        disposers.set(
-          sidebar,
-          mountSidebarController(sidebar, signal, () => config),
-        );
-      }
+  const applyConfiguredOrder = () => {
+    for (const controller of controllers.values()) {
+      controller.applyConfiguredOrder();
     }
   };
 
@@ -265,8 +389,64 @@ export function mountThreadOrganizerSidebar({
       );
     }
     mountSidebars();
+    applyConfiguredOrder();
+  };
+
+  const savePendingSectionOrder = async () => {
+    if (savingSectionOrder) return;
+    savingSectionOrder = true;
+    try {
+      while (pendingSectionOrder !== null && !signal.aborted) {
+        const requestedOrder = pendingSectionOrder;
+        pendingSectionOrder = null;
+        const next =
+          config === null ? null : configInSectionOrder(config, requestedOrder);
+        if (next === null) {
+          applyConfiguredOrder();
+          continue;
+        }
+        const saved = await saveConfig(editableWorkflowConfig(next));
+        if (!signal.aborted) updateConfig(saved);
+      }
+    } catch {
+      pendingSectionOrder = null;
+      applyConfiguredOrder();
+    } finally {
+      savingSectionOrder = false;
+      if (pendingSectionOrder !== null && !signal.aborted) {
+        void savePendingSectionOrder();
+      }
+    }
+  };
+
+  const requestStageOrder = (sectionIds: readonly string[]): boolean => {
+    if (config === null || configInSectionOrder(config, sectionIds) === null) {
+      return false;
+    }
+    pendingSectionOrder = [...sectionIds];
+    void savePendingSectionOrder();
+    return true;
+  };
+
+  const mountSidebars = () => {
+    for (const [sidebar, controller] of controllers) {
+      if (!sidebar.isConnected) {
+        controller.dispose();
+        controllers.delete(sidebar);
+      }
+    }
     for (const sidebar of targetDocument.querySelectorAll(SIDEBAR_SELECTOR)) {
-      sidebar.dispatchEvent(new Event("thread-organizer-config-changed"));
+      if (!controllers.has(sidebar)) {
+        controllers.set(
+          sidebar,
+          mountSidebarController(
+            sidebar,
+            signal,
+            () => config,
+            requestStageOrder,
+          ),
+        );
+      }
     }
   };
 
@@ -293,8 +473,8 @@ export function mountThreadOrganizerSidebar({
   const dispose = () => {
     discoveryObserver.disconnect();
     view?.removeEventListener(WORKFLOW_CONFIG_EVENT, onConfigEvent);
-    for (const stop of disposers.values()) stop();
-    disposers.clear();
+    for (const controller of controllers.values()) controller.dispose();
+    controllers.clear();
   };
   signal.addEventListener("abort", dispose, { once: true });
   return dispose;

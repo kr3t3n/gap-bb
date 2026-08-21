@@ -1,0 +1,218 @@
+{
+  "expectedMode": "project-first",
+  "nativeWindowBounds": {
+    "left": 80,
+    "top": 80,
+    "width": 1280,
+    "height": 900
+  },
+  "cycles": 5,
+  "cycleObservations": [
+    {
+      "cycle": 1,
+      "width": 1440,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "cycle": 2,
+      "width": 1440,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "cycle": 3,
+      "width": 1440,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "cycle": 4,
+      "width": 1440,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "cycle": 5,
+      "width": 1440,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    }
+  ],
+  "transitionObservations": [
+    {
+      "width": 389,
+      "height": 844,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 391,
+      "height": 844,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 767,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 768,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 769,
+      "height": 900,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1023,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1024,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1025,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1919,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1920,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    },
+    {
+      "width": 1921,
+      "height": 1440,
+      "plugin": 168,
+      "project": 139,
+      "overflow": false,
+      "title": "bb"
+    }
+  ],
+  "captures": [
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 844,
+      "scale": 3,
+      "filename": "core-before-main-mobile.png",
+      "observation": {
+        "width": 390,
+        "height": 844,
+        "plugin": 168,
+        "project": 139,
+        "overflow": false,
+        "title": "bb"
+      }
+    },
+    {
+      "name": "small-narrow",
+      "width": 768,
+      "height": 900,
+      "scale": 2,
+      "filename": "core-before-main-small-narrow.png",
+      "observation": {
+        "width": 768,
+        "height": 900,
+        "plugin": 168,
+        "project": 139,
+        "overflow": false,
+        "title": "bb"
+      }
+    },
+    {
+      "name": "normal-desktop",
+      "width": 1440,
+      "height": 900,
+      "scale": 2,
+      "filename": "core-before-main-normal-desktop.png",
+      "observation": {
+        "width": 1440,
+        "height": 900,
+        "plugin": 168,
+        "project": 139,
+        "overflow": false,
+        "title": "bb"
+      }
+    },
+    {
+      "name": "very-large-desktop",
+      "width": 3440,
+      "height": 1440,
+      "scale": 1,
+      "filename": "core-before-main-very-large-desktop.png",
+      "observation": {
+        "width": 3440,
+        "height": 1440,
+        "plugin": 168,
+        "project": 139,
+        "overflow": false,
+        "title": "bb"
+      }
+    }
+  ],
+  "result": "PASS"
+}

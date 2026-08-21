@@ -2045,6 +2045,199 @@ describe("acp bridge", () => {
     startedProviderThreadIds.pop();
   });
 
+  describe("agent-initiated turns (#2122)", () => {
+    /**
+     * Runs one prompted turn whose agent then streams unprompted work, and
+     * waits until that work has fully arrived (the closing chunk is on the
+     * wire) so each test observes the agent turn at a known point.
+     */
+    async function promptThenAwaitAgentWork(
+      variant: string,
+      args?: StartThreadArgs,
+    ): Promise<{ bbThreadId: string; providerThreadId: string }> {
+      const thread = await startThread(args);
+      const turnId = sendTurnRequest("turn/start", thread.providerThreadId, {
+        input: [
+          { type: "text", text: `agent-initiated${variant}`, mentions: [] },
+        ],
+      });
+      await waitForResponse(turnId);
+      await waitForTurnCompleted();
+      await waitFor(
+        () =>
+          agentMessageTexts().some((text) => text.includes("the answer is 42."))
+            ? true
+            : undefined,
+        "agent-initiated work to arrive",
+      );
+      return thread;
+    }
+
+    it("brackets unprompted agent work as a turn and ends it when the agent goes quiet", async () => {
+      await promptThenAwaitAgentWork("");
+
+      // The work is a real turn with real items, not hidden raw-event rows.
+      expect(threadEventsOfType("turn/started")).toHaveLength(2);
+      expect(threadEventsOfType("provider/unhandled")).toHaveLength(0);
+      expect(agentMessageTexts().join("")).toContain(
+        "agent-initiated:job bg_4 finished, the answer is 42.",
+      );
+      const toolItems = threadEventsOfType("item/started").filter(
+        (event) =>
+          (event.item as { type: string }).type === "toolCall" ||
+          (event.item as { type: string }).type === "commandExecution" ||
+          (event.item as { type: string }).type === "fileRead",
+      );
+      expect(toolItems.length).toBeGreaterThan(0);
+      // The echoed job result stays noise: one accepted input (the user's),
+      // no phantom user row.
+      expect(
+        emittedDeltaKinds().filter((kind) => kind === "input.accepted"),
+      ).toHaveLength(1);
+
+      // No end-of-turn signal exists; the quiet window closes it as completed.
+      const completed = await waitFor(() => {
+        const events = threadEventsOfType("turn/completed");
+        return events.length === 2 ? events[1] : undefined;
+      }, "agent turn to close after the quiet window");
+      expect(completed).toMatchObject({ status: "completed" });
+    }, 20_000);
+
+    it("does not open a turn for unprompted non-work updates", async () => {
+      const { providerThreadId } = await startThread();
+      const turnId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "agent-initiated:noise", mentions: [] }],
+      });
+      await waitForResponse(turnId);
+      await waitForTurnCompleted();
+      await waitFor(
+        () =>
+          emittedDeltaKinds().includes("contextWindow") ? true : undefined,
+        "idle usage_update to be processed",
+      );
+
+      expect(threadEventsOfType("turn/started")).toHaveLength(1);
+    });
+
+    it("settles the agent turn before the next user turn opens", async () => {
+      const { providerThreadId } = await promptThenAwaitAgentWork("");
+      expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+
+      const nextId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "hello there", mentions: [] }],
+      });
+      const response = await waitForResponse(nextId);
+      expect(response.error).toBeUndefined();
+      await waitFor(
+        () =>
+          threadEventsOfType("turn/completed").length === 3 ? true : undefined,
+        "all three turns to settle",
+      );
+
+      expect(threadEventsOfType("turn/started")).toHaveLength(3);
+      expect(
+        threadEventsOfType("turn/completed").map((event) => event.status),
+      ).toEqual(["completed", "completed", "completed"]);
+      expect(agentMessageTexts().at(-1)).toBe("echo:hello there");
+    });
+
+    it("interrupts the agent turn on thread/stop", async () => {
+      const { providerThreadId } = await promptThenAwaitAgentWork("");
+
+      const stopId = sendRequest("thread/stop", {
+        threadId: bbThreadIdFor(providerThreadId),
+        providerThreadId,
+        intent: "interrupt",
+        activeTurnId: null,
+      });
+      const stopResponse = await waitForResponse(stopId);
+      expect(stopResponse.result).toEqual({ ok: true });
+
+      const completed = threadEventsOfType("turn/completed");
+      expect(completed).toHaveLength(2);
+      expect(completed[1]).toMatchObject({ status: "interrupted" });
+      startedProviderThreadIds.pop();
+    });
+
+    it("fails the agent turn when the agent process exits mid-turn", async () => {
+      const { bbThreadId } = await promptThenAwaitAgentWork(":exit");
+
+      const errors = await waitFor(() => {
+        const errorNotifications = notifications("error");
+        return errorNotifications.length > 0 ? errorNotifications : undefined;
+      }, "agent exit error notification");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.params).toMatchObject({ threadId: bbThreadId });
+
+      // The turn reaches a terminal state instead of hanging "working".
+      const completed = threadEventsOfType("turn/completed");
+      expect(completed).toHaveLength(2);
+      expect(completed[1]).toMatchObject({ status: "failed" });
+      startedProviderThreadIds.pop();
+    });
+
+    it("auto-allows a permission request inside an agent turn in full mode", async () => {
+      await promptThenAwaitAgentWork(":permission", { permissionMode: "full" });
+
+      expect(
+        output.messages.filter(
+          (message) => message.method === "interaction/request",
+        ),
+      ).toHaveLength(0);
+      expect(agentMessageTexts().join("")).toContain("permission:yes ");
+    });
+
+    it("forwards a permission request inside an agent turn in ask mode", async () => {
+      const { bbThreadId, providerThreadId } = await startThread({
+        permissionMode: "accept-edits",
+        permissionEscalation: "ask",
+      });
+      const turnId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [
+          { type: "text", text: "agent-initiated:permission", mentions: [] },
+        ],
+      });
+      await waitForResponse(turnId);
+      await waitForTurnCompleted();
+
+      const forwarded = await waitFor(
+        () =>
+          output.messages.find(
+            (message) =>
+              message.method === "interaction/request" &&
+              message.id !== undefined,
+          ),
+        "forwarded permission request",
+      );
+      expect(forwarded.params).toMatchObject({
+        threadId: bbThreadId,
+        providerThreadId,
+        payload: {
+          kind: "approval",
+          subject: expect.objectContaining({ command: "rm -rf build" }),
+        },
+      });
+      handleLine(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: forwarded.id,
+          result: { decision: "deny" },
+        }),
+      );
+
+      await waitFor(
+        () =>
+          agentMessageTexts().some((text) => text.includes("the answer is 42."))
+            ? true
+            : undefined,
+        "agent-initiated work to finish after the decision",
+      );
+      expect(agentMessageTexts().join("")).toContain("permission:no ");
+      // The whole exchange lives in the one agent turn.
+      expect(threadEventsOfType("turn/started")).toHaveLength(2);
+    });
+  });
+
   it("forks an advertised ACP session with the target cwd and MCP servers", async () => {
     const forkLog = join(workspaceDir, "fork-params.json");
     const forkId = sendRequest("thread/fork", {

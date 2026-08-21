@@ -75,6 +75,7 @@ import {
   resolveAcpPermissionDecision,
 } from "../interactions.js";
 import { acpProfileFromLaunchSpec, type AcpAgentProfile } from "../profiles.js";
+import { isAgentWorkAcpUpdateKind } from "../visibility.js";
 import {
   buildAcpModelListParams,
   buildAcpSessionParams,
@@ -183,10 +184,14 @@ interface AcpThreadSession {
   policy: AcpSessionPolicy;
   pendingInstructions: string | undefined;
   /**
-   * Which agent prompt is in flight for this bb turn: an ordinary `"turn"`,
-   * the provider-local `"compaction"` maintenance prompt, or none.
+   * The bridge's mirror of the turn it has open for this bb thread: an
+   * ordinary `"turn"` (a session/prompt is in flight), the provider-local
+   * `"compaction"` maintenance prompt, an `"agent"`-initiated turn the bridge
+   * bracketed around unprompted agent work, or none.
    */
-  activePromptKind: "turn" | "compaction" | null;
+  activePromptKind: "turn" | "compaction" | "agent" | null;
+  /** Re-armed per work update; closes an `"agent"` turn once the agent is quiet. */
+  agentTurnQuietTimer: ReturnType<typeof setTimeout> | undefined;
   queuedInputs: AcpPendingTurnInput[];
   /** True while a session/prompt request is outstanding. */
   promptRequestPending: boolean;
@@ -214,6 +219,14 @@ let dynamicToolBridgePromise: Promise<AcpDynamicToolBridge> | null = null;
 // Runtime waits on thread/stop until the agent settles the cancelled prompt or
 // this timeout forces disposal. Stop remains a best-effort success boundary.
 const THREAD_STOP_CANCEL_TIMEOUT_MS = 4_000;
+
+// ACP has no end-of-turn signal for agent-initiated work (no session/prompt
+// result arrives), so a still-open `"agent"` turn closes once the agent has
+// been quiet this long. Kept short: while the turn is open the thread reads as
+// working and the server holds the last streamed message until the turn
+// flushes. A long pause (a slow agent-side tool) splits the work into two
+// turns, which is the cheaper failure.
+const AGENT_TURN_QUIET_WINDOW_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // stdout helpers (bridge → runtime)
@@ -327,7 +340,7 @@ function emitSessionError(session: AcpThreadSession, message: string): void {
   // prompt in flight the error stays a runtime notification — a settling
   // error delta on an idle thread would surface a diagnostic for a turn bb
   // never accepted. `activePromptKind` mirrors the turn the bridge itself
-  // opened with `turn.open`.
+  // opened with `turn.open`, an agent-initiated one included.
   if (session.activePromptKind !== null) {
     emitForSession(session, "error", {
       threadId: session.bbThreadId,
@@ -1348,10 +1361,14 @@ function handlePermissionRequest(
     return;
   }
 
+  // A permission request belongs to a turn the user can see: a prompted one
+  // or an agent-initiated one. Outside both (idle, or the compaction prompt)
+  // there is no turn to present it against.
   if (
     session.stopping ||
     session.cancelRequested ||
-    session.activePromptKind !== "turn"
+    (session.activePromptKind !== "turn" &&
+      session.activePromptKind !== "agent")
   ) {
     responder.result({ outcome: { outcome: "cancelled" } });
     return;
@@ -1654,17 +1671,25 @@ async function startAgentSession(
     onExit: (info) => {
       const wasCurrent = sessionsByBbThreadId.get(bbThreadId) === session;
       cancelPendingPermissions(session);
+      clearAgentTurnQuietTimer(session);
       removeSession(session);
       if (!wasCurrent || session.stopping) {
         return;
       }
       void releaseCursorMcpApproval(session);
+      // Emitted while `activePromptKind` still names the open turn so the
+      // error settles it. A prompted turn clears its own mirror when the
+      // rejected prompt unwinds; an agent-initiated turn has no prompt, so it
+      // is cleared here.
       emitSessionError(
         session,
         `ACP agent "${agentLabel}" exited unexpectedly` +
           `${info.code !== null ? ` (code ${info.code})` : ""}` +
           `${info.stderrTail ? `: ${info.stderrTail}` : ""}`,
       );
+      if (session.activePromptKind === "agent") {
+        session.activePromptKind = null;
+      }
     },
   });
   session = {
@@ -1680,6 +1705,7 @@ async function startAgentSession(
     },
     pendingInstructions: params.instructions,
     activePromptKind: null,
+    agentTurnQuietTimer: undefined,
     queuedInputs: [],
     promptRequestPending: false,
     cancelRequested: false,
@@ -1872,6 +1898,9 @@ async function stopSession(session: AcpThreadSession): Promise<void> {
     "ACP session stopped before the steer was sent",
   );
   cancelPendingPermissions(session);
+  // An interrupt stops agent-initiated work too. There is no prompt to
+  // cancel, so the turn settles as interrupted and the agent is reaped.
+  settleAgentTurn(session, "cancelled");
 
   if (session.activePromptKind !== null && !session.connection.exited) {
     session.connection.notify("session/cancel", {
@@ -1908,6 +1937,12 @@ async function releaseSession(session: AcpThreadSession): Promise<void> {
     "ACP session released before the steer was sent",
   );
   cancelPendingPermissions(session);
+  // Like a released prompt turn, a released agent turn detaches without a
+  // fabricated terminal state.
+  clearAgentTurnQuietTimer(session);
+  if (session.activePromptKind === "agent") {
+    session.activePromptKind = null;
+  }
   session.connection.kill();
   removeSession(session);
   await releaseCursorMcpApproval(session);
@@ -2143,6 +2178,64 @@ function startCompaction(
 }
 
 // ---------------------------------------------------------------------------
+// Agent-initiated turns
+// ---------------------------------------------------------------------------
+
+/**
+ * Work the agent streams with no prompt in flight (OMP delivering an async
+ * job's result, for one) is a turn bb never asked for. ACP sends no bracket
+ * for it, so the bridge opens one itself — the sanctioned shape for
+ * provider-internal activity (provider-bridge-protocol.md, turn lifecycle
+ * rule 3) — and owns every exit path: a quiet window ends it, the next
+ * bb-initiated turn settles a still-open one first, `thread/stop` interrupts
+ * it, and an agent exit fails it through `emitSessionError`. Without the
+ * bracket the assembler demotes each update to a hidden thread-scoped
+ * `provider/unhandled` row and the user sees nothing (#2122).
+ */
+function openAgentTurn(session: AcpThreadSession): void {
+  session.activePromptKind = "agent";
+  emitForSession(session, ACP_TURN_STARTED_METHOD, {
+    threadId: session.bbThreadId,
+  });
+}
+
+function clearAgentTurnQuietTimer(session: AcpThreadSession): void {
+  if (session.agentTurnQuietTimer !== undefined) {
+    clearTimeout(session.agentTurnQuietTimer);
+    session.agentTurnQuietTimer = undefined;
+  }
+}
+
+function settleAgentTurn(
+  session: AcpThreadSession,
+  stopReason: z.infer<typeof acpStopReasonSchema>,
+): void {
+  if (session.activePromptKind !== "agent") {
+    return;
+  }
+  clearAgentTurnQuietTimer(session);
+  session.activePromptKind = null;
+  emitForSession(session, ACP_TURN_COMPLETED_METHOD, {
+    threadId: session.bbThreadId,
+    stopReason,
+  });
+}
+
+function armAgentTurnQuietTimer(session: AcpThreadSession): void {
+  clearAgentTurnQuietTimer(session);
+  session.agentTurnQuietTimer = setTimeout(() => {
+    session.agentTurnQuietTimer = undefined;
+    // A permission the user has not answered is not quiet: the agent is
+    // waiting on bb, and its answer belongs to this turn.
+    if (session.pendingPermissions.size > 0) {
+      armAgentTurnQuietTimer(session);
+      return;
+    }
+    settleAgentTurn(session, "end_turn");
+  }, AGENT_TURN_QUIET_WINDOW_MS);
+}
+
+// ---------------------------------------------------------------------------
 // Agent inbound traffic
 // ---------------------------------------------------------------------------
 
@@ -2199,6 +2292,14 @@ function handleAgentNotification(
     parsed.data.sessionId !== session.providerThreadId
   ) {
     return;
+  }
+  if (isAgentWorkAcpUpdateKind(parsed.data.update.sessionUpdate)) {
+    if (session.activePromptKind === null) {
+      openAgentTurn(session);
+    }
+    if (session.activePromptKind === "agent") {
+      armAgentTurnQuietTimer(session);
+    }
   }
   emitForSession(session, ACP_UPDATE_METHOD, {
     threadId: session.bbThreadId,
@@ -2517,6 +2618,9 @@ async function handleRequest(
         sendError(request.id, -32000, "No active ACP session");
         return;
       }
+      // User input ends agent-initiated work: that turn settles before the
+      // requested one opens, so each reaches exactly one terminal state.
+      settleAgentTurn(session, "end_turn");
       if (session.activePromptKind !== null) {
         sendError(request.id, -32000, "A turn is already active");
         return;

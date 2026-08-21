@@ -247,6 +247,70 @@ function captureMcpServers(message) {
     : [];
 }
 
+async function streamAgentInitiatedWork(variant) {
+  if (variant === "noise") {
+    notifyUpdate({ sessionUpdate: "available_commands_update", commands: [] });
+    notifyUpdate({
+      sessionUpdate: "user_message_chunk",
+      content: { type: "text", text: "[bg_4 finished] exit 0" },
+    });
+    // A usage_update last: a positive, observable sign the idle traffic was
+    // processed even though none of it may open a turn.
+    notifyUpdate({ sessionUpdate: "usage_update", used: 1_000, size: 128_000 });
+    return;
+  }
+  notifyUpdate({
+    sessionUpdate: "user_message_chunk",
+    content: { type: "text", text: "[bg_4 finished] exit 0" },
+  });
+  notifyUpdate(messageChunk("agent-initiated:job bg_4 finished, "));
+  notifyUpdate({
+    sessionUpdate: "tool_call",
+    toolCallId: "agent-initiated-tool-1",
+    title: "cat result.txt",
+    kind: "read",
+    status: "pending",
+    rawInput: { path: "result.txt" },
+  });
+  await sleep(30);
+  notifyUpdate({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "agent-initiated-tool-1",
+    status: "completed",
+    content: [{ type: "content", content: { type: "text", text: "42" } }],
+  });
+  if (variant === "permission") {
+    let outcome = "cancelled";
+    try {
+      const result = await requestClient("session/request_permission", {
+        sessionId: activeSessionId,
+        toolCall: {
+          toolCallId: "agent-initiated-tool-2",
+          title: "Run rm",
+          kind: "execute",
+          rawInput: { command: "rm -rf build" },
+        },
+        options: [
+          { optionId: "yes", name: "Allow", kind: "allow_once" },
+          { optionId: "no", name: "Deny", kind: "reject_once" },
+        ],
+      });
+      outcome =
+        result?.outcome?.outcome === "selected"
+          ? result.outcome.optionId
+          : "cancelled";
+    } catch {
+      outcome = "error";
+    }
+    notifyUpdate(messageChunk(`permission:${outcome} `));
+  }
+  notifyUpdate(messageChunk("the answer is 42."));
+  if (variant === "exit") {
+    await sleep(30);
+    process.exit(3);
+  }
+}
+
 async function handlePrompt(message) {
   activePromptId = message.id;
   const text = promptText(message.params?.prompt);
@@ -355,6 +419,16 @@ async function handlePrompt(message) {
     } catch {
       notifyUpdate(messageChunk("write:denied"));
     }
+  } else if (text.includes("agent-initiated")) {
+    // OMP async-job delivery shape: once this prompt's result has gone out,
+    // the agent streams work with no session/prompt driving it — an echoed
+    // user_message_chunk (the injected job result), agent text, a tool call
+    // that completes, and a closing chunk. Variants ride the prompt text:
+    //   agent-initiated:permission  ask for permission mid-stream
+    //   agent-initiated:exit        exit(3) right after the stream
+    //   agent-initiated:noise       only non-work updates (must not open a turn)
+    const variant = text.match(/agent-initiated:(\w+)/)?.[1] ?? "";
+    setTimeout(() => void streamAgentInitiatedWork(variant), 40);
   } else if (text.includes("hang")) {
     // Stay pending until the client sends session/cancel.
     return;

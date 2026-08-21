@@ -23,14 +23,25 @@ const NORMALIZED_ACP_METHODS = new Set<string>([
   ACP_WARNING_METHOD,
 ]);
 
-const NORMALIZED_ACP_UPDATE_KINDS = new Set<string>([
+// Update kinds that carry agent work: streamed text, thoughts, tool calls,
+// and plans. Arriving with no prompt in flight they are an agent-initiated
+// turn (e.g. OMP's async-job delivery), which the bridge brackets itself.
+const AGENT_WORK_ACP_UPDATE_KINDS = new Set<string>([
   "agent_message_chunk",
   "agent_thought_chunk",
   "tool_call",
   "tool_call_update",
   "plan",
+]);
+
+const NORMALIZED_ACP_UPDATE_KINDS = new Set<string>([
+  ...AGENT_WORK_ACP_UPDATE_KINDS,
   "usage_update",
 ]);
+
+export function isAgentWorkAcpUpdateKind(updateKind: string): boolean {
+  return AGENT_WORK_ACP_UPDATE_KINDS.has(updateKind);
+}
 
 // Update kinds the agent may legitimately send but BB intentionally does not
 // render: replayed history, agent-side mode/command/config/session metadata.

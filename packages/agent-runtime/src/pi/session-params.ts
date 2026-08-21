@@ -71,6 +71,23 @@ export interface PiSessionParams {
   thinkingLevel?: PiReasoningLevel;
 }
 
+/**
+ * The option subset a turn command can change on a live session. Every turn
+ * command carries the full execution options; the bridge applies these to
+ * the session it already holds instead of waiting for a rebuild.
+ */
+export interface PiTurnOptions {
+  model: string | undefined;
+  thinkingLevel: PiReasoningLevel | undefined;
+}
+
+export function buildPiTurnOptions(options: PiSessionOptions): PiTurnOptions {
+  return {
+    model: options.model ? options.model : undefined,
+    thinkingLevel: toPiThinkingLevel(options.reasoningLevel),
+  };
+}
+
 export function buildPiSessionParams(
   args: BuildPiSessionParamsArgs,
 ): PiSessionParams {

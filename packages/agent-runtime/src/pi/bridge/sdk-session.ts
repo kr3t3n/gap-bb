@@ -13,14 +13,16 @@ import {
   type PromptOptions,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type ImageContent } from "@earendil-works/pi-ai";
 import { getBridgeRecorder } from "@bb/provider-bridge-protocol/bridge-kit";
 import { createConfiguredPiServices } from "./configured-services.js";
+
+type PiThinkingLevel = NonNullable<CreateAgentSessionOptions["thinkingLevel"]>;
 
 export interface PiSdkSessionOptions {
   cwd: string;
   model?: string;
-  thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
+  thinkingLevel?: PiThinkingLevel;
   additionalSkillPaths?: readonly string[];
   shellEnvOverrides?: ShellEnvOverrides;
   customTools?: ToolDefinition[];
@@ -433,6 +435,77 @@ export class PiSdkSession {
       return;
     }
     this.monitorSteerConsumption(tracked.promise);
+  }
+
+  /**
+   * Reconcile the execution options a turn command carries with the live
+   * session. The runtime never diffs options: they ride every turn command and
+   * the bridge applies what changed (#2160). Construction is the only other
+   * place that reads them, so without this a model or thinking level picked
+   * mid-thread would wait for the next session rebuild.
+   *
+   * This deliberately bypasses `AgentSession.setModel` / `setThinkingLevel`:
+   * both persist the new value as the user's default in the global Pi settings
+   * file (`~/.pi/agent/settings.json`). Session construction never does that,
+   * and a per-thread bb selection must not rewrite the user's `pi` CLI
+   * defaults. The SDK's own pieces are applied directly instead: the model is
+   * auth-checked and swapped on the agent state, recorded in the session file,
+   * and the thinking level is re-clamped to the new model's capabilities the
+   * way `setModel` does.
+   *
+   * @throws when the requested model does not resolve or has no credentials;
+   * the caller fails the turn instead of silently keeping the old model.
+   */
+  async applyTurnOptions(args: {
+    model: string | undefined;
+    thinkingLevel: PiThinkingLevel | undefined;
+  }): Promise<void> {
+    const session = this.session;
+    if (!session) {
+      throw new Error("No active Pi SDK session");
+    }
+
+    const nextModel = resolveConfiguredModel(session.modelRuntime, args.model);
+    const currentModel = session.model;
+    if (
+      nextModel &&
+      (currentModel === undefined ||
+        currentModel.provider !== nextModel.provider ||
+        currentModel.id !== nextModel.id)
+    ) {
+      if (!(await session.modelRuntime.checkAuth(nextModel.provider))) {
+        throw new Error(`No API key for ${nextModel.provider}/${nextModel.id}`);
+      }
+      this.recordSdkBoundary("bridge→provider", {
+        method: "setModel",
+        params: { provider: nextModel.provider, id: nextModel.id },
+      });
+      session.agent.state.model = nextModel;
+      session.sessionManager.appendModelChange(
+        nextModel.provider,
+        nextModel.id,
+      );
+    }
+
+    // Without a model there is nothing to clamp against; pi already forced
+    // the level to "off" at construction.
+    if (!session.model) {
+      return;
+    }
+    // An unchanged or unsupported level keeps the current one, but a model
+    // switch still re-clamps it to what the new model supports.
+    const effectiveLevel = clampThinkingLevel(
+      session.model,
+      args.thinkingLevel ?? session.thinkingLevel,
+    );
+    if (effectiveLevel !== session.thinkingLevel) {
+      this.recordSdkBoundary("bridge→provider", {
+        method: "setThinkingLevel",
+        params: { level: effectiveLevel },
+      });
+      session.agent.state.thinkingLevel = effectiveLevel;
+      session.sessionManager.appendThinkingLevelChange(effectiveLevel);
+    }
   }
 
   async compact(): Promise<void> {

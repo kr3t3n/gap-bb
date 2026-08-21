@@ -290,6 +290,94 @@ function createAutoRetryEndEvent(success: boolean): AgentSessionEvent {
   };
 }
 
+interface ModelTrackingPiModel {
+  id: string;
+  provider: string;
+  reasoning: boolean;
+}
+
+/**
+ * A stand-in for the live `AgentSession` surface that turn-option
+ * reconciliation touches. It mirrors the real shape: `model` and
+ * `thinkingLevel` read the agent state, the session file is appended through
+ * `sessionManager`, and the persisting SDK setters plus the settings writer
+ * are spies so a test can prove they stay untouched.
+ */
+function createModelTrackingPiSession(args: {
+  model: ModelTrackingPiModel;
+  models: readonly ModelTrackingPiModel[];
+  thinkingLevel: string;
+  authenticated?: boolean;
+}) {
+  const state = { model: args.model, thinkingLevel: args.thinkingLevel };
+  const session = {
+    abort: mockAbort,
+    agent: { state },
+    bindExtensions: mockBindExtensions,
+    compact: mockCompact,
+    dispose: mockDispose,
+    extensionRunner: { emit: vi.fn(async () => {}) },
+    getActiveToolNames: mockGetActiveToolNames,
+    getContextUsage: vi.fn(),
+    getSessionStats: vi.fn(),
+    hasExtensionHandlers: vi.fn(() => false),
+    isStreaming: false,
+    get model() {
+      return state.model;
+    },
+    modelRuntime: {
+      checkAuth: vi.fn(async () =>
+        args.authenticated === false ? undefined : { ok: true },
+      ),
+      getModel: vi.fn((provider: string, id: string) =>
+        args.models.find(
+          (candidate) => candidate.provider === provider && candidate.id === id,
+        ),
+      ),
+      getModels: vi.fn(() => args.models),
+      hasConfiguredAuth: vi.fn(() => true),
+    },
+    prompt: mockPrompt,
+    sessionManager: {
+      appendModelChange: vi.fn(),
+      appendThinkingLevelChange: vi.fn(),
+      getLeafId: vi.fn(() => "pi-entry-checkpoint"),
+    },
+    setActiveToolsByName: mockSetActiveToolsByName,
+    setModel: vi.fn(),
+    setThinkingLevel: vi.fn(),
+    settingsManager: {
+      setDefaultModelAndProvider: vi.fn(),
+      setDefaultThinkingLevel: vi.fn(),
+    },
+    subscribe: vi.fn((listener: MockAgentSessionEventListener) => {
+      mockSessionEventListeners.push(listener);
+      return () => {};
+    }),
+    get thinkingLevel() {
+      return state.thinkingLevel;
+    },
+  };
+  mockCreateAgentSession.mockResolvedValueOnce({ session });
+  return session;
+}
+
+const GROK: ModelTrackingPiModel = {
+  id: "grok-4.6",
+  provider: "xai",
+  reasoning: true,
+};
+const SOL: ModelTrackingPiModel = {
+  id: "gpt-5.6-sol",
+  provider: "openai-codex",
+  reasoning: true,
+};
+const NO_REASONING: ModelTrackingPiModel = {
+  id: "gpt-4.1",
+  provider: "openai",
+  reasoning: false,
+};
+
 async function flushAsyncWork(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -1095,6 +1183,135 @@ describe("PiSdkSession", () => {
 
     await expect(session.compact()).resolves.toBeUndefined();
     expect(session.getIsCompacting()).toBe(false);
+  });
+
+  describe("applyTurnOptions", () => {
+    it("switches the live model and thinking level without touching the user's pi defaults", async () => {
+      const piSession = createModelTrackingPiSession({
+        model: GROK,
+        models: [GROK, SOL],
+        thinkingLevel: "low",
+      });
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project", model: "xai/grok-4.6", thinkingLevel: "low" },
+        vi.fn(),
+        vi.fn(),
+      );
+      await session.start();
+
+      await session.applyTurnOptions({
+        model: "openai-codex/gpt-5.6-sol",
+        thinkingLevel: "high",
+      });
+
+      expect(piSession.agent.state).toEqual({
+        model: SOL,
+        thinkingLevel: "high",
+      });
+      expect(piSession.sessionManager.appendModelChange).toHaveBeenCalledWith(
+        "openai-codex",
+        "gpt-5.6-sol",
+      );
+      expect(
+        piSession.sessionManager.appendThinkingLevelChange,
+      ).toHaveBeenCalledWith("high");
+      // AgentSession.setModel / setThinkingLevel persist the selection into
+      // ~/.pi/agent/settings.json as the user's CLI default. A per-thread bb
+      // selection must never do that.
+      expect(piSession.setModel).not.toHaveBeenCalled();
+      expect(piSession.setThinkingLevel).not.toHaveBeenCalled();
+      expect(
+        piSession.settingsManager.setDefaultModelAndProvider,
+      ).not.toHaveBeenCalled();
+      expect(
+        piSession.settingsManager.setDefaultThinkingLevel,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("re-clamps the thinking level to what the new model supports", async () => {
+      const piSession = createModelTrackingPiSession({
+        model: GROK,
+        models: [GROK, NO_REASONING],
+        thinkingLevel: "high",
+      });
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project", model: "xai/grok-4.6" },
+        vi.fn(),
+        vi.fn(),
+      );
+      await session.start();
+
+      await session.applyTurnOptions({
+        model: "openai/gpt-4.1",
+        thinkingLevel: undefined,
+      });
+
+      expect(piSession.agent.state).toEqual({
+        model: NO_REASONING,
+        thinkingLevel: "off",
+      });
+      expect(
+        piSession.sessionManager.appendThinkingLevelChange,
+      ).toHaveBeenCalledWith("off");
+    });
+
+    it("leaves the session alone when the turn carries the current options", async () => {
+      const piSession = createModelTrackingPiSession({
+        model: GROK,
+        models: [GROK, SOL],
+        thinkingLevel: "medium",
+      });
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project", model: "xai/grok-4.6" },
+        vi.fn(),
+        vi.fn(),
+      );
+      await session.start();
+
+      await session.applyTurnOptions({
+        model: "xai/grok-4.6",
+        thinkingLevel: "medium",
+      });
+      await session.applyTurnOptions({
+        model: undefined,
+        thinkingLevel: undefined,
+      });
+
+      expect(piSession.agent.state).toEqual({
+        model: GROK,
+        thinkingLevel: "medium",
+      });
+      expect(piSession.modelRuntime.checkAuth).not.toHaveBeenCalled();
+      expect(piSession.sessionManager.appendModelChange).not.toHaveBeenCalled();
+      expect(
+        piSession.sessionManager.appendThinkingLevelChange,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("rejects a model without credentials and keeps the current one", async () => {
+      const piSession = createModelTrackingPiSession({
+        authenticated: false,
+        model: GROK,
+        models: [GROK, SOL],
+        thinkingLevel: "medium",
+      });
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project", model: "xai/grok-4.6" },
+        vi.fn(),
+        vi.fn(),
+      );
+      await session.start();
+
+      await expect(
+        session.applyTurnOptions({
+          model: "openai-codex/gpt-5.6-sol",
+          thinkingLevel: undefined,
+        }),
+      ).rejects.toThrow("No API key for openai-codex/gpt-5.6-sol");
+
+      expect(piSession.agent.state.model).toEqual(GROK);
+      expect(piSession.sessionManager.appendModelChange).not.toHaveBeenCalled();
+    });
   });
 
   it("waits for abort before disposing during graceful close", async () => {

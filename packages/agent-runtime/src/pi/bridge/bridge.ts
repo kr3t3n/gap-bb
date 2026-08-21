@@ -50,6 +50,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { createPiDeltaTranslator } from "../delta-translation.js";
 import {
   buildPiSessionParams,
+  buildPiTurnOptions,
   type PiSessionParams,
 } from "../session-params.js";
 import { PiSdkSession, type PiSdkSessionOptions } from "./sdk-session.js";
@@ -960,6 +961,31 @@ function recordAcceptedTurnInput(params: TurnStartParams): void {
   ]);
 }
 
+/**
+ * Apply the execution options a turn command carries to the live session
+ * before its input is dispatched. Options ride every command and the runtime
+ * never diffs them, so a model or reasoning level picked after the session
+ * was constructed reaches pi here (#2160). Runs ahead of every dispatch,
+ * including manual compaction, so the summarization request also goes to the
+ * selected model. Returns false after failing the request when the options
+ * cannot be applied: a model that does not resolve must fail the turn, not
+ * silently keep the old model.
+ */
+async function applyTurnOptionsOrFail(
+  id: string | number,
+  threadSession: ThreadSession,
+  options: TurnStartParams["options"],
+): Promise<boolean> {
+  try {
+    await threadSession.session.applyTurnOptions(buildPiTurnOptions(options));
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(id, -32000, message);
+    return false;
+  }
+}
+
 async function handleTurnStart(
   id: string | number,
   params: TurnStartParams,
@@ -968,6 +994,10 @@ async function handleTurnStart(
   const threadSession = sessions.get(params.threadId);
   if (!threadSession || threadSession.closing) {
     sendError(id, -32000, "No active pi session");
+    return;
+  }
+
+  if (!(await applyTurnOptionsOrFail(id, threadSession, params.options))) {
     return;
   }
 
@@ -1019,6 +1049,10 @@ async function handleTurnSteer(
 
   if (threadSession.session.getIsCompacting()) {
     sendError(id, -32000, "Cannot steer while context compaction is active");
+    return;
+  }
+
+  if (!(await applyTurnOptionsOrFail(id, threadSession, params.options))) {
     return;
   }
 

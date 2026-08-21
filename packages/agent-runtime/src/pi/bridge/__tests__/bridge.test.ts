@@ -39,6 +39,7 @@ const {
   mockCreateAgentSession,
   mockCreateAgentSessionServices,
   mockInMemory,
+  mockModelRuntime,
   mockOpen,
   mockResourceLoaders,
   mockGetPiModelRuntime,
@@ -48,10 +49,20 @@ const {
     getShellCommandPrefix: vi.fn(() => undefined),
     getShellPath: vi.fn(() => undefined),
   };
+  interface MockPiModel {
+    id: string;
+    provider: string;
+    reasoning: boolean;
+  }
   const mockModelRuntime = {
+    checkAuth: vi.fn<() => Promise<{ ok: boolean } | undefined>>(
+      async () => undefined,
+    ),
     getAvailable: vi.fn(async () => []),
-    getModel: vi.fn(() => undefined),
-    getModels: vi.fn(() => []),
+    getModel: vi.fn<(provider: string, id: string) => MockPiModel | undefined>(
+      () => undefined,
+    ),
+    getModels: vi.fn<() => MockPiModel[]>(() => []),
     hasConfiguredAuth: vi.fn(() => false),
     refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
   };
@@ -80,6 +91,7 @@ const {
     mockCreateAgentSession: vi.fn(),
     mockCreateAgentSessionServices,
     mockInMemory: vi.fn((cwd?: string) => ({ kind: "in-memory", cwd })),
+    mockModelRuntime,
     mockOpen: vi.fn(),
     mockResourceLoaders,
     mockGetPiModelRuntime: vi.fn(async () => mockModelRuntime),
@@ -385,6 +397,96 @@ function createTurnEndEvent(stopReason: "toolUse" | "stop"): AgentSessionEvent {
           },
         ]
       : [],
+  };
+}
+
+interface PiTestModel {
+  id: string;
+  provider: string;
+  reasoning: boolean;
+}
+
+const GROK: PiTestModel = { id: "grok-4.6", provider: "xai", reasoning: true };
+const SOL: PiTestModel = {
+  id: "gpt-5.6-sol",
+  provider: "openai-codex",
+  reasoning: true,
+};
+
+interface ModelTrackingPiAgentSession extends ControlledPiAgentSession {
+  agent: { state: { model: PiTestModel; thinkingLevel: string } };
+  /** `provider/id` + thinking level at each prompt and compact dispatch. */
+  dispatches: string[];
+  sessionManager: ControlledPiAgentSession["sessionManager"] & {
+    appendModelChange: ReturnType<typeof vi.fn>;
+    appendThinkingLevelChange: ReturnType<typeof vi.fn>;
+  };
+}
+
+/**
+ * A controlled session that also tracks the model the way pi's AgentSession
+ * does: `model`/`thinkingLevel` read the agent state, and every dispatch
+ * records what it would run with. Construction mirrors
+ * `createAgentSessionFromServices`: the model the bridge resolved is the one
+ * the session starts on.
+ */
+function installModelTrackingPiSessions(models: readonly PiTestModel[]): {
+  sessions: ModelTrackingPiAgentSession[];
+  restore(): void;
+} {
+  const sessions: ModelTrackingPiAgentSession[] = [];
+  mockModelRuntime.getModel.mockImplementation((provider, id) =>
+    models.find((model) => model.provider === provider && model.id === id),
+  );
+  mockModelRuntime.getModels.mockImplementation(() => [...models]);
+  mockModelRuntime.checkAuth.mockImplementation(async () => ({ ok: true }));
+  mockCreateAgentSession.mockImplementation(
+    async (options: { model: PiTestModel; thinkingLevel?: string }) => {
+      const base = createControlledPiAgentSession();
+      const state = {
+        model: options.model,
+        thinkingLevel: options.thinkingLevel ?? "medium",
+      };
+      const session: ModelTrackingPiAgentSession = {
+        ...base,
+        agent: { state },
+        dispatches: [],
+        sessionManager: {
+          ...base.sessionManager,
+          appendModelChange: vi.fn(),
+          appendThinkingLevelChange: vi.fn(),
+        },
+      };
+      Object.defineProperties(session, {
+        model: { get: () => state.model },
+        modelRuntime: { value: mockModelRuntime },
+        thinkingLevel: { get: () => state.thinkingLevel },
+      });
+      const describeState = () =>
+        `${state.model.provider}/${state.model.id} ${state.thinkingLevel}`;
+      session.prompt.mockImplementation(
+        async (
+          _text: string,
+          options?: { preflightResult?: (accepted: boolean) => void },
+        ) => {
+          session.dispatches.push(describeState());
+          options?.preflightResult?.(true);
+        },
+      );
+      session.compact.mockImplementation(async () => {
+        session.dispatches.push(`compact ${describeState()}`);
+      });
+      sessions.push(session);
+      return { session };
+    },
+  );
+  return {
+    sessions,
+    restore() {
+      mockModelRuntime.getModel.mockImplementation(() => undefined);
+      mockModelRuntime.getModels.mockImplementation(() => []);
+      mockModelRuntime.checkAuth.mockImplementation(async () => undefined);
+    },
   };
 }
 
@@ -804,6 +906,162 @@ describe("pi bridge", () => {
       );
       expect(firstDeltaIndex).toBe(resetIndex);
     } finally {
+      bridge.restore();
+    }
+  });
+
+  it("applies the model and reasoning level a turn/start carries before prompting", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const tracking = installModelTrackingPiSessions([GROK, SOL]);
+    const threadId = "thread-turn-options";
+
+    try {
+      bridge.sendRequest(
+        70,
+        "thread/start",
+        sessionParams({
+          threadId,
+          options: { model: "xai/grok-4.6", reasoningLevel: "low" },
+        }),
+      );
+      await bridge.waitForResponse(70);
+
+      bridge.sendRequest(71, "turn/start", {
+        ...turnStartParams(threadId, [{ type: "text", text: "first" }]),
+        options: {
+          ...CANONICAL_OPTIONS,
+          model: "xai/grok-4.6",
+          reasoningLevel: "low",
+        },
+      });
+      await bridge.waitForResponse(71);
+
+      // The user picks another model and level in the composer. The runtime
+      // never diffs options: the change only rides the next turn command.
+      bridge.sendRequest(72, "turn/start", {
+        ...turnStartParams(threadId, [{ type: "text", text: "second" }]),
+        options: {
+          ...CANONICAL_OPTIONS,
+          model: "openai-codex/gpt-5.6-sol",
+          reasoningLevel: "high",
+        },
+      });
+      await expect(bridge.waitForResponse(72)).resolves.toMatchObject({
+        id: 72,
+        result: { threadId },
+      });
+
+      const [session] = tracking.sessions;
+      expect(tracking.sessions).toHaveLength(1);
+      expect(session?.dispatches).toEqual([
+        "xai/grok-4.6 low",
+        "openai-codex/gpt-5.6-sol high",
+      ]);
+      expect(session?.sessionManager.appendModelChange).toHaveBeenCalledWith(
+        "openai-codex",
+        "gpt-5.6-sol",
+      );
+    } finally {
+      tracking.restore();
+      bridge.restore();
+    }
+  });
+
+  it("compacts with the model selected on the compaction turn", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const tracking = installModelTrackingPiSessions([GROK, SOL]);
+    const threadId = "thread-compact-options";
+
+    try {
+      bridge.sendRequest(
+        73,
+        "thread/start",
+        sessionParams({ threadId, options: { model: "xai/grok-4.6" } }),
+      );
+      await bridge.waitForResponse(73);
+
+      bridge.sendRequest(74, "turn/start", {
+        ...turnStartParams(threadId, [compactCommandPromptInput()]),
+        options: { ...CANONICAL_OPTIONS, model: "openai-codex/gpt-5.6-sol" },
+      });
+      await bridge.waitForResponse(74);
+      await bridge.flushWork();
+
+      expect(tracking.sessions[0]?.dispatches).toEqual([
+        "compact openai-codex/gpt-5.6-sol medium",
+      ]);
+    } finally {
+      tracking.restore();
+      bridge.restore();
+    }
+  });
+
+  it("applies the model a turn/steer carries before steering", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const tracking = installModelTrackingPiSessions([GROK, SOL]);
+    const threadId = "thread-steer-options";
+
+    try {
+      bridge.sendRequest(
+        75,
+        "thread/start",
+        sessionParams({ threadId, options: { model: "xai/grok-4.6" } }),
+      );
+      await bridge.waitForResponse(75);
+      const [session] = tracking.sessions;
+      if (!session) {
+        throw new Error("Expected a Pi session");
+      }
+      session.isStreaming = true;
+
+      bridge.sendRequest(76, "turn/steer", {
+        ...turnSteerParams(threadId, "turn-active", [
+          { type: "text", text: "steer" },
+        ]),
+        options: { ...CANONICAL_OPTIONS, model: "openai-codex/gpt-5.6-sol" },
+      });
+      await expect(bridge.waitForResponse(76)).resolves.toMatchObject({
+        id: 76,
+        result: { threadId },
+      });
+
+      expect(session.dispatches).toEqual(["openai-codex/gpt-5.6-sol medium"]);
+    } finally {
+      tracking.restore();
+      bridge.restore();
+    }
+  });
+
+  it("fails a turn whose model cannot be resolved instead of keeping the old one", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const tracking = installModelTrackingPiSessions([GROK]);
+    const threadId = "thread-turn-bad-model";
+
+    try {
+      bridge.sendRequest(
+        77,
+        "thread/start",
+        sessionParams({ threadId, options: { model: "xai/grok-4.6" } }),
+      );
+      await bridge.waitForResponse(77);
+
+      bridge.sendRequest(78, "turn/start", {
+        ...turnStartParams(threadId, [{ type: "text", text: "hello" }]),
+        options: { ...CANONICAL_OPTIONS, model: "unsupported/model" },
+      });
+      await expect(bridge.waitForResponse(78)).resolves.toMatchObject({
+        error: {
+          code: -32000,
+          message: 'Failed to resolve Pi model "unsupported/model"',
+        },
+        id: 78,
+      });
+
+      const [session] = tracking.sessions;
+      expect(session?.dispatches).toEqual([]);
+      expect(session?.agent.state.model).toEqual(GROK);
+    } finally {
+      tracking.restore();
       bridge.restore();
     }
   });

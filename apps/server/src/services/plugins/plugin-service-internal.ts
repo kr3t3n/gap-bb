@@ -181,6 +181,12 @@ export interface PluginResolvedAgentConfiguration {
   /** Only configured plugins appear. An empty set means fail-closed or an
    * intentional empty selection; absent plugins keep all manifest skills. */
   selectedSkillIdsByPlugin: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Generated slot content keyed by plugin id, then selected skill name.
+   * String-only selections do not need an entry. */
+  skillSlotsByPlugin: ReadonlyMap<
+    string,
+    ReadonlyMap<string, Readonly<Record<string, string>>>
+  >;
   dynamicInstructions: Array<{ pluginId: string; text: string }>;
 }
 

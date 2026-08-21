@@ -10,6 +10,10 @@ import {
 
 interface ResolveSkillCatalogSourcesArgs {
   pluginSkillSelections?: ReadonlyMap<string, ReadonlySet<string>>;
+  pluginSkillSlots?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, Readonly<Record<string, string>>>
+  >;
   projectSkillSources?: readonly ProjectInjectedSkillSource[];
   sharedSkillSources?: readonly SharedInjectedSkillSource[];
 }
@@ -33,6 +37,9 @@ export function resolveSkillCatalog(
     pluginSkillRoots: getPluginSkillRootContributions(),
     ...(args.pluginSkillSelections !== undefined
       ? { pluginSkillSelections: args.pluginSkillSelections }
+      : {}),
+    ...(args.pluginSkillSlots !== undefined
+      ? { pluginSkillSlots: args.pluginSkillSlots }
       : {}),
     ...(args.projectSkillSources !== undefined
       ? { projectSkillSources: args.projectSkillSources }

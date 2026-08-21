@@ -784,7 +784,12 @@ describe("agent tools", () => {
 
     await expect(
       harness.resolveAgentConfiguration(configurationContext),
-    ).resolves.toEqual({ tools: [], skills: [], instructions: null });
+    ).resolves.toEqual({
+      tools: [],
+      skills: [],
+      skillSlots: {},
+      instructions: null,
+    });
     expect(harness.logEntries.at(-1)?.message).toContain(
       "recursive JSON Schema $ref",
     );
@@ -852,14 +857,43 @@ describe("agent tools", () => {
 
     expect(alpha.tools.map((tool) => tool.name)).toEqual(["alpha_tool"]);
     expect(alpha.skills).toEqual(["alpha-skill"]);
+    expect(alpha.skillSlots).toEqual({});
     expect(alpha.instructions).toHaveLength(4096);
     expect(beta.tools.map((tool) => tool.name)).toEqual(["beta_tool"]);
     expect(beta.skills).toEqual(["beta-skill"]);
+    expect(beta.skillSlots).toEqual({});
     expect(contexts).toEqual([configurationContext, betaContext]);
     expect(harness.registrations.agentTools.map((tool) => tool.name)).toEqual([
       "alpha_tool",
       "beta_tool",
     ]);
+  });
+
+  it("returns generated slot content for an object skill selection", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "slotted",
+      agentSkillIds: ["workflow"],
+    });
+    bb.agents.configure(() => ({
+      tools: [],
+      skills: [
+        {
+          name: "workflow",
+          slots: { preferences: "| planning | Define the work |" },
+        },
+      ],
+    }));
+
+    await expect(
+      harness.resolveAgentConfiguration(configurationContext),
+    ).resolves.toEqual({
+      tools: [],
+      skills: ["workflow"],
+      skillSlots: {
+        workflow: { preferences: "| planning | Define the work |" },
+      },
+      instructions: null,
+    });
   });
 
   it("fails closed for unknown and duplicate configure ids", async () => {
@@ -870,7 +904,12 @@ describe("agent tools", () => {
     }));
     await expect(
       unknown.harness.resolveAgentConfiguration(configurationContext),
-    ).resolves.toEqual({ tools: [], skills: [], instructions: null });
+    ).resolves.toEqual({
+      tools: [],
+      skills: [],
+      skillSlots: {},
+      instructions: null,
+    });
     expect(unknown.harness.logEntries.at(-1)?.message).toContain(
       'unknown tool id "missing-tool"',
     );

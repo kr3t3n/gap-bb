@@ -980,11 +980,20 @@ bb.agents.registerTool({
   },
 });
 
-// All tools and manifest skills are static registrations. configure() only
-// selects this plugin's own ids when BB resolves a thread/session config.
+// Tools and manifest skill trees are static registrations. configure() can
+// select this plugin's own ids and fill predefined slots in a selected skill
+// when BB resolves a thread/session config.
 bb.agents.configure((context) => ({
   tools: context.provider.id === "codex" ? ["docs_search"] : [],
-  skills: context.project.kind === "standard" ? ["repo-conventions"] : [],
+  skills:
+    context.project.kind === "standard"
+      ? [
+          {
+            name: "repo-conventions",
+            slots: { current-project: `Project: ${context.project.name}` },
+          },
+        ]
+      : [],
   instructions: `Docs selection resolved for ${context.project.name}.`,
 }));
 
@@ -1038,6 +1047,24 @@ validation still runs the registered parameters. Unknown or duplicate ids,
 malformed output, an invalid override, more than 256 ids in either array, or a
 throwing callback fail closed for that plugin only. Dynamic `instructions` are
 truncated to 4096 characters.
+
+A skill object `{ name, slots }` selects the same static manifest skill as its
+string form and replaces Markdown between paired markers in `SKILL.md`:
+
+```markdown
+<!-- bb:skill-slot current-project:start -->
+
+Default content shown when no slot value is supplied.
+
+<!-- bb:skill-slot current-project:end -->
+```
+
+Slot names use lowercase letters, numbers, and single hyphens; each supplied
+slot must have exactly one paired marker. BB preserves the markers in the
+resolved skill and materializes a content-addressed skill tree without
+modifying the plugin's installed files. Use slots when live plugin settings
+belong inside the skill's standing workflow. Use dynamic `instructions` only
+for short session context that is not part of a skill.
 
 Resolution happens for `thread.start` and `turn.submit`. A selected tool set
 takes effect only when the provider session is next started/resumed; BB never

@@ -3,6 +3,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -15,6 +16,7 @@ import { resolveBuiltinSkillsRootPath } from "../../src/services/skills/builtin-
 import {
   hashSkillTreeEntries,
   readSkillTreeManifest,
+  renderPluginSkillSlots,
   resolveInjectedSkillSources as resolveInjectedSkillSourcesWithRegistry,
   resolveServerOwnedSkillCatalogEntries,
   SkillTreeRegistry,
@@ -133,6 +135,97 @@ function expectedTreeSource(args: {
 }
 
 describe("injected skill source discovery", () => {
+  it("fills a selected plugin skill slot without mutating its bundled template", async () => {
+    const temp = await makeTempDir();
+    const dataDir = path.join(temp, "data");
+    const builtinSkillsRootPath = path.join(temp, "builtins");
+    const pluginSkillsRootPath = path.join(temp, "plugin-skills");
+    const skillRoot = await writeSkill({
+      rootPath: pluginSkillsRootPath,
+      name: "workflow",
+    });
+    const template = [
+      await readFile(path.join(skillRoot, "SKILL.md"), "utf8"),
+      "<!-- bb:skill-slot preferences:start -->",
+      "Default preferences.",
+      "<!-- bb:skill-slot preferences:end -->",
+      "",
+    ].join("\n");
+    await writeFile(path.join(skillRoot, "SKILL.md"), template, "utf8");
+    await writeFile(path.join(skillRoot, "reference.md"), "Keep me.\n", "utf8");
+    const registry = new SkillTreeRegistry();
+    const { logger, warnings } = createCapturingLogger();
+
+    const first = resolveInjectedSkillSourcesWithRegistry(logger, {
+      builtinSkillsRootPath,
+      dataDir,
+      pluginSkillRoots: [
+        { pluginId: "organizer", rootPath: pluginSkillsRootPath },
+      ],
+      pluginSkillSelections: new Map([["organizer", new Set(["workflow"])]]),
+      pluginSkillSlots: new Map([
+        [
+          "organizer",
+          new Map([
+            ["workflow", { preferences: "| planning | Define scope |" }],
+          ]),
+        ],
+      ]),
+      skillTreeRegistry: registry,
+    });
+
+    expect(first).toHaveLength(1);
+    const firstSource = first[0];
+    expect(firstSource?.kind).toBe("tree");
+    if (firstSource?.kind !== "tree") throw new Error("expected tree source");
+    const firstRoot = registry.resolve(firstSource.treeHash);
+    expect(firstRoot).toBeDefined();
+    expect(await readFile(path.join(firstRoot!, "SKILL.md"), "utf8")).toBe(
+      renderPluginSkillSlots(template, {
+        preferences: "| planning | Define scope |",
+      }),
+    );
+    expect(await readFile(path.join(firstRoot!, "reference.md"), "utf8")).toBe(
+      "Keep me.\n",
+    );
+    expect(await readFile(path.join(skillRoot, "SKILL.md"), "utf8")).toBe(
+      template,
+    );
+
+    const second = resolveInjectedSkillSourcesWithRegistry(logger, {
+      builtinSkillsRootPath,
+      dataDir,
+      pluginSkillRoots: [
+        { pluginId: "organizer", rootPath: pluginSkillsRootPath },
+      ],
+      pluginSkillSelections: new Map([["organizer", new Set(["workflow"])]]),
+      pluginSkillSlots: new Map([
+        [
+          "organizer",
+          new Map([
+            ["workflow", { preferences: "| review | Check the spec |" }],
+          ]),
+        ],
+      ]),
+      skillTreeRegistry: registry,
+    });
+    const secondSource = second[0];
+    expect(secondSource?.kind).toBe("tree");
+    if (secondSource?.kind !== "tree") throw new Error("expected tree source");
+    expect(secondSource.treeHash).not.toBe(firstSource.treeHash);
+    const secondRoot = registry.resolve(secondSource.treeHash);
+    expect(secondRoot).toBeDefined();
+    expect(await readFile(path.join(secondRoot!, "SKILL.md"), "utf8")).toBe(
+      renderPluginSkillSlots(template, {
+        preferences: "| review | Check the spec |",
+      }),
+    );
+    expect(await readFile(path.join(skillRoot, "SKILL.md"), "utf8")).toBe(
+      template,
+    );
+    expect(warnings).toEqual([]);
+  });
+
   it("hashes trees deterministically and includes content, paths, and modes", async () => {
     const temp = await makeTempDir();
     const firstRoot = await writeSkill({

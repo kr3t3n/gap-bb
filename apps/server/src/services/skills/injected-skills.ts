@@ -46,6 +46,12 @@ export interface ResolveInjectedSkillSourcesArgs {
   /** Configured plugins only: restrict their otherwise static skill roots to
    * these frontmatter names for this resolution. */
   pluginSkillSelections?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Per-resolution Markdown inserted into named slots of selected plugin
+   * skills. Keys are plugin id, skill frontmatter name, then slot name. */
+  pluginSkillSlots?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, Readonly<Record<string, string>>>
+  >;
   projectSkillSources?: readonly ProjectInjectedSkillSource[];
   projectSkillsRootPath?: string;
   sharedSkillSources?: readonly SharedInjectedSkillSource[];
@@ -55,6 +61,52 @@ export interface ResolveInjectedSkillSourcesArgs {
 interface PluginSkillRoot {
   pluginId: string;
   rootPath: string;
+}
+
+function pluginSkillSlotMarker(
+  slotName: string,
+  edge: "start" | "end",
+): string {
+  return `<!-- bb:skill-slot ${slotName}:${edge} -->`;
+}
+
+/** Fill generated Markdown between paired markers while preserving the
+ * markers themselves so the ownership boundary stays inspectable. */
+export function renderPluginSkillSlots(
+  content: string,
+  slots: Readonly<Record<string, string>>,
+): string {
+  let rendered = content;
+  for (const [slotName, slotContent] of Object.entries(slots).sort(
+    ([left], [right]) => compareStringsByCodePoint(left, right),
+  )) {
+    const startMarker = pluginSkillSlotMarker(slotName, "start");
+    const endMarker = pluginSkillSlotMarker(slotName, "end");
+    const startIndex = rendered.indexOf(startMarker);
+    if (
+      startIndex < 0 ||
+      rendered.indexOf(startMarker, startIndex + startMarker.length) >= 0
+    ) {
+      throw new Error(
+        `Skill slot ${JSON.stringify(slotName)} must have exactly one start marker`,
+      );
+    }
+    const endIndex = rendered.indexOf(
+      endMarker,
+      startIndex + startMarker.length,
+    );
+    if (
+      endIndex < 0 ||
+      rendered.indexOf(endMarker, endIndex + endMarker.length) >= 0
+    ) {
+      throw new Error(
+        `Skill slot ${JSON.stringify(slotName)} must have exactly one end marker after its start marker`,
+      );
+    }
+    const normalizedContent = slotContent.trim();
+    rendered = `${rendered.slice(0, startIndex + startMarker.length)}\n${normalizedContent}${normalizedContent.length > 0 ? "\n" : ""}${rendered.slice(endIndex)}`;
+  }
+  return rendered;
 }
 
 export function discoverPluginSkillIds(
@@ -530,6 +582,85 @@ function readSkillsRoot(
   return sources;
 }
 
+function materializePluginSkillSlots(args: {
+  dataDir: string;
+  logger: ServerLogger;
+  pluginId: string;
+  rootPath: string;
+  skillTreeRegistry: SkillTreeRegistry;
+  slots: Readonly<Record<string, string>>;
+  source: HostDaemonInjectedSkillSource;
+}): HostDaemonInjectedSkillSource | null {
+  if (args.source.kind !== "tree" || Object.keys(args.slots).length === 0) {
+    return args.source;
+  }
+  const sourceSkillPath = path.join(args.rootPath, args.source.name);
+  const sourceSkillFilePath = path.join(sourceSkillPath, SKILL_FILE_NAME);
+  try {
+    const rendered = renderPluginSkillSlots(
+      fs.readFileSync(sourceSkillFilePath, "utf8"),
+      args.slots,
+    );
+    const variantHash = createHash("sha256")
+      .update("bb-plugin-skill-slots-v1\0")
+      .update(args.source.treeHash)
+      .update("\0")
+      .update(rendered)
+      .digest("hex");
+    const variantsRootPath = path.join(
+      args.dataDir,
+      "plugins",
+      args.pluginId,
+      "generated-skills",
+    );
+    const variantRootPath = path.join(variantsRootPath, variantHash);
+    const variantSkillPath = path.join(variantRootPath, args.source.name);
+    if (!fs.existsSync(variantSkillPath)) {
+      fs.mkdirSync(variantsRootPath, { recursive: true });
+      const temporaryRootPath = fs.mkdtempSync(
+        path.join(variantsRootPath, `${variantHash}.tmp-`),
+      );
+      try {
+        const temporarySkillPath = path.join(
+          temporaryRootPath,
+          args.source.name,
+        );
+        fs.cpSync(sourceSkillPath, temporarySkillPath, { recursive: true });
+        fs.writeFileSync(
+          path.join(temporarySkillPath, SKILL_FILE_NAME),
+          rendered,
+          "utf8",
+        );
+        fs.renameSync(temporaryRootPath, variantRootPath);
+      } catch (error) {
+        fs.rmSync(temporaryRootPath, { recursive: true, force: true });
+        if (!fs.existsSync(variantRootPath)) {
+          throw error;
+        }
+      }
+    }
+    return (
+      readSkillsRoot({
+        logger: args.logger,
+        skillTreeRegistry: args.skillTreeRegistry,
+        skillsRootPath: variantRootPath,
+        sourceType: "data-dir",
+      }).find((source) => source.name === args.source.name) ?? null
+    );
+  } catch (error) {
+    logInvalidSkill({
+      candidatePath: sourceSkillPath,
+      logger: args.logger,
+      reason:
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : "Unable to fill generated skill slots",
+      sourceType: "data-dir",
+    });
+    return null;
+  }
+}
+
 /**
  * Resolve the two roots whose lifecycle is owned by the server process. Unlike
  * runtime catalog resolution, this intentionally preserves both rows when a
@@ -744,11 +875,26 @@ export function resolveSkillCatalogEntries(
         skillTreeRegistry,
         skillsRootPath: rootPath,
         sourceType: "data-dir",
-      }).filter(
-        (source) =>
-          !args.pluginSkillSelections?.has(pluginId) ||
-          args.pluginSkillSelections.get(pluginId)?.has(source.name) === true,
-      ),
+      })
+        .filter(
+          (source) =>
+            !args.pluginSkillSelections?.has(pluginId) ||
+            args.pluginSkillSelections.get(pluginId)?.has(source.name) === true,
+        )
+        .flatMap((source) => {
+          const slots = args.pluginSkillSlots?.get(pluginId)?.get(source.name);
+          if (slots === undefined) return [source];
+          const materialized = materializePluginSkillSlots({
+            dataDir: args.dataDir,
+            logger,
+            pluginId,
+            rootPath,
+            skillTreeRegistry,
+            slots,
+            source,
+          });
+          return materialized === null ? [] : [materialized];
+        }),
     }),
   );
   const pluginSources = pluginSourceGroups.reduce<

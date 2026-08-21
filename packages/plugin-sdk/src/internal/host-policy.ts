@@ -76,6 +76,9 @@ export const PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS = 80;
 export const PLUGIN_AGENT_SELECTION_MAX_IDS = 256;
 export const PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS = 4096;
 export const PLUGIN_AGENT_TOOL_PARAMETERS_MAX_BYTES = 128 * 1024;
+export const PLUGIN_AGENT_SKILL_SLOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+export const PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT = 16;
+export const PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS = 64 * 1024;
 
 // Mention provider ids prefix wire item ids ("<providerId>:<itemId>"), so
 // ":" is excluded to keep the split unambiguous.

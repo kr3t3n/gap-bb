@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -752,7 +752,16 @@ describe("plugin tools reach thread runtime config", () => {
                     }
                   : "beta_tool",
               ],
-              skills: [alpha ? "alpha-skill" : "beta-skill"],
+              skills: [
+                alpha
+                  ? {
+                      name: "alpha-skill",
+                      slots: {
+                        preferences: "Current host: " + context.host.name,
+                      },
+                    }
+                  : "beta-skill",
+              ],
               instructions:
                 "context=" + JSON.stringify(context) +
                 ";factory=" + factoryCount +
@@ -767,7 +776,11 @@ describe("plugin tools reach thread runtime config", () => {
       await mkdir(skillDir, { recursive: true });
       await writeFile(
         join(skillDir, "SKILL.md"),
-        `---\nname: ${skill}\ndescription: Use ${skill} in conditional tests.\n---\n\n# ${skill}\n`,
+        `---\nname: ${skill}\ndescription: Use ${skill} in conditional tests.\n---\n\n# ${skill}\n${
+          skill === "alpha-skill"
+            ? "\n<!-- bb:skill-slot preferences:start -->\nDefault host.\n<!-- bb:skill-slot preferences:end -->\n"
+            : ""
+        }`,
       );
     }
     const brokenRoot = await writePlugin(pluginsDir, {
@@ -892,6 +905,20 @@ describe("plugin tools reach thread runtime config", () => {
     expect(
       alphaCommand.injectedSkillSources.map((skill) => skill.name),
     ).toContain("alpha-skill");
+    const alphaSkillSource = alphaCommand.injectedSkillSources.find(
+      (skill) => skill.name === "alpha-skill",
+    );
+    expect(alphaSkillSource?.kind).toBe("tree");
+    if (alphaSkillSource?.kind !== "tree") {
+      throw new Error("Expected generated alpha skill tree");
+    }
+    const alphaSkillRoot = harness.deps.skillTreeRegistry.resolve(
+      alphaSkillSource.treeHash,
+    );
+    expect(alphaSkillRoot).toBeDefined();
+    expect(await readFile(join(alphaSkillRoot!, "SKILL.md"), "utf8")).toContain(
+      "<!-- bb:skill-slot preferences:start -->\nCurrent host: Alpha Host\n<!-- bb:skill-slot preferences:end -->",
+    );
     expect(
       alphaCommand.injectedSkillSources.map((skill) => skill.name),
     ).not.toContain("beta-skill");

@@ -30,6 +30,9 @@ import {
   enforcePluginCliOutputLimit,
   PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS,
   PLUGIN_AGENT_SELECTION_MAX_IDS,
+  PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS,
+  PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT,
+  PLUGIN_AGENT_SKILL_SLOT_NAME_PATTERN,
   PLUGIN_AGENT_TOOL_PARAMETERS_MAX_BYTES,
   RESERVED_AGENT_TOOL_NAMES,
   adoptHttpRouteResponse,
@@ -755,7 +758,10 @@ function normalizeMentionSearchItems(
 interface NormalizedPluginAgentConfiguration {
   toolIds: string[];
   toolParameterOverrides: Map<string, Record<string, unknown>>;
-  skillIds: string[];
+  skillSelections: Array<{
+    name: string;
+    slots: Readonly<Record<string, string>>;
+  }>;
   instructions: string | null;
 }
 
@@ -874,11 +880,11 @@ function normalizePluginAgentToolSelections(args: {
   return { toolIds, parameterOverrides };
 }
 
-function normalizePluginAgentSelectionIds(args: {
+function normalizePluginAgentSkillSelections(args: {
   knownIds: ReadonlySet<string>;
   pluginId: string;
   value: unknown;
-}): string[] {
+}): Array<{ name: string; slots: Readonly<Record<string, string>> }> {
   if (!Array.isArray(args.value)) {
     throw new Error("configure() output.skills must be an array");
   }
@@ -887,27 +893,89 @@ function normalizePluginAgentSelectionIds(args: {
       `configure() output.skills exceeds the ${PLUGIN_AGENT_SELECTION_MAX_IDS}-id limit`,
     );
   }
-  const selected: string[] = [];
+  const selected: Array<{
+    name: string;
+    slots: Readonly<Record<string, string>>;
+  }> = [];
   const seen = new Set<string>();
   for (let index = 0; index < args.value.length; index += 1) {
-    const id = args.value[index];
-    if (typeof id !== "string" || id.length === 0) {
+    const entry = args.value[index];
+    let name: unknown;
+    let slots: Readonly<Record<string, string>> = {};
+    if (typeof entry === "string") {
+      name = entry;
+    } else if (
+      typeof entry === "object" &&
+      entry !== null &&
+      !Array.isArray(entry)
+    ) {
+      const typed = entry as Record<string, unknown>;
+      const unknownKeys = Object.keys(typed)
+        .filter((key) => !["name", "slots"].includes(key))
+        .sort();
+      if (unknownKeys.length > 0) {
+        throw new Error(
+          `configure() output.skills[${index}] contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}`,
+        );
+      }
+      name = typed.name;
+      if (
+        typeof typed.slots !== "object" ||
+        typed.slots === null ||
+        Array.isArray(typed.slots)
+      ) {
+        throw new Error(
+          `configure() output.skills[${index}].slots must be an object`,
+        );
+      }
+      const entries = Object.entries(typed.slots);
+      if (entries.length > PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT) {
+        throw new Error(
+          `configure() output.skills[${index}].slots exceeds the ${PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT}-slot limit`,
+        );
+      }
+      slots = Object.fromEntries(
+        entries.map(([slotName, content]) => {
+          if (!PLUGIN_AGENT_SKILL_SLOT_NAME_PATTERN.test(slotName)) {
+            throw new Error(
+              `configure() output.skills[${index}].slots has invalid slot name ${JSON.stringify(slotName)}`,
+            );
+          }
+          if (typeof content !== "string") {
+            throw new Error(
+              `configure() output.skills[${index}].slots[${JSON.stringify(slotName)}] must be a string`,
+            );
+          }
+          if (content.length > PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS) {
+            throw new Error(
+              `configure() output.skills[${index}].slots[${JSON.stringify(slotName)}] exceeds the ${PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS}-character limit`,
+            );
+          }
+          return [slotName, content] as const;
+        }),
+      );
+    } else {
       throw new Error(
-        `configure() output.skills[${index}] must be a non-empty string`,
+        `configure() output.skills[${index}] must be a skill name or { name, slots }`,
       );
     }
-    if (seen.has(id)) {
+    if (typeof name !== "string" || name.length === 0) {
       throw new Error(
-        `configure() output.skills contains duplicate id ${JSON.stringify(id)}`,
+        `configure() output.skills[${index}] must ${typeof entry === "string" ? "be" : "name"} a non-empty string`,
       );
     }
-    if (!args.knownIds.has(id)) {
+    if (seen.has(name)) {
       throw new Error(
-        `configure() selected unknown skill id ${JSON.stringify(id)} owned by plugin ${JSON.stringify(args.pluginId)}`,
+        `configure() output.skills contains duplicate id ${JSON.stringify(name)}`,
       );
     }
-    seen.add(id);
-    selected.push(id);
+    if (!args.knownIds.has(name)) {
+      throw new Error(
+        `configure() selected unknown skill id ${JSON.stringify(name)} owned by plugin ${JSON.stringify(args.pluginId)}`,
+      );
+    }
+    seen.add(name);
+    selected.push({ name, slots });
   }
   return selected;
 }
@@ -958,7 +1026,7 @@ function normalizePluginAgentConfiguration(args: {
   return {
     toolIds: toolSelections.toolIds,
     toolParameterOverrides: toolSelections.parameterOverrides,
-    skillIds: normalizePluginAgentSelectionIds({
+    skillSelections: normalizePluginAgentSkillSelections({
       knownIds: args.knownSkillIds,
       pluginId: args.pluginId,
       value: output.skills,
@@ -2159,6 +2227,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       const allTools = collectAgentTools();
       const tools: PluginAgentToolContribution[] = [];
       const selectedSkillIdsByPlugin = new Map<string, ReadonlySet<string>>();
+      const skillSlotsByPlugin = new Map<
+        string,
+        ReadonlyMap<string, Readonly<Record<string, string>>>
+      >();
       const dynamicInstructions: Array<{ pluginId: string; text: string }> = [];
 
       for (const [pluginId, plugin] of [...loaded.entries()].sort(([a], [b]) =>
@@ -2211,7 +2283,16 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               instructions: record.instructions,
             })),
         );
-        selectedSkillIdsByPlugin.set(pluginId, new Set(outcome.value.skillIds));
+        selectedSkillIdsByPlugin.set(
+          pluginId,
+          new Set(outcome.value.skillSelections.map(({ name }) => name)),
+        );
+        const skillSlots = new Map(
+          outcome.value.skillSelections
+            .filter(({ slots }) => Object.keys(slots).length > 0)
+            .map(({ name, slots }) => [name, slots] as const),
+        );
+        if (skillSlots.size > 0) skillSlotsByPlugin.set(pluginId, skillSlots);
         if (outcome.value.instructions !== null) {
           dynamicInstructions.push({
             pluginId,
@@ -2220,7 +2301,12 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         }
       }
 
-      return { tools, selectedSkillIdsByPlugin, dynamicInstructions };
+      return {
+        tools,
+        selectedSkillIdsByPlugin,
+        skillSlotsByPlugin,
+        dynamicInstructions,
+      };
     },
 
     listInstructionContributions() {

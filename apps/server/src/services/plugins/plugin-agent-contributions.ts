@@ -57,6 +57,10 @@ export async function resolvePluginAgentConfiguration(args: {
     return {
       tools: active?.listAgentTools() ?? [],
       selectedSkillIdsByPlugin: new Map<string, ReadonlySet<string>>(),
+      skillSlotsByPlugin: new Map<
+        string,
+        ReadonlyMap<string, Readonly<Record<string, string>>>
+      >(),
       dynamicInstructions: [] as Array<{ pluginId: string; text: string }>,
     };
   }

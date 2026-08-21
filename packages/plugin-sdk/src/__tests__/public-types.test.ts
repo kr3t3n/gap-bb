@@ -27,6 +27,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "PluginAgents",
   "PluginAgentConfiguration",
   "PluginAgentConfigurationContext",
+  "PluginAgentSkillSelection",
   "PluginAgentToolContentPart",
   "PluginAgentToolContext",
   "PluginAgentToolExperimentalStatusLabels",

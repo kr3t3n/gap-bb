@@ -243,6 +243,7 @@ export async function resolveThreadRuntimeCommandConfig(
     projectSkillSources,
     sharedSkillSources: sharedSkills.runtimeSources,
     pluginSkillSelections: conditionalConfiguration.selectedSkillIdsByPlugin,
+    pluginSkillSlots: conditionalConfiguration.skillSlotsByPlugin,
   }).map((entry) => entry.runtimeSource);
   const dataDirAgentInstructions = readDataDirAgentInstructions(
     deps.logger,

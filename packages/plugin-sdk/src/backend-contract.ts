@@ -487,6 +487,20 @@ export interface PluginAgentToolSelection {
   parameters: Record<string, unknown>;
 }
 
+/** Object form of a {@link PluginAgentConfiguration} skills entry. Selects a
+ * manifest skill and replaces named generated slots in its `SKILL.md` for
+ * this resolution. The static skill marks a slot with paired comments:
+ * `<!-- bb:skill-slot <name>:start -->` and
+ * `<!-- bb:skill-slot <name>:end -->`. */
+export interface PluginAgentSkillSelection {
+  /** Frontmatter name of a skill from this plugin's manifest skill roots. */
+  name: string;
+  /** Slot name to Markdown content. Every supplied slot must exist exactly
+   * once in the selected skill. Markers remain in the resolved skill so the
+   * generated boundary stays inspectable. */
+  slots: Record<string, string>;
+}
+
 /** Per-resolution selection returned by {@link PluginAgents.configure}. */
 export interface PluginAgentConfiguration {
   /** Tool names registered by this plugin, or {@link PluginAgentToolSelection}
@@ -494,9 +508,12 @@ export interface PluginAgentConfiguration {
    * resolution. Duplicate or unknown names, or an invalid override, reject
    * this plugin's complete selection for the resolution. */
   tools: Array<string | PluginAgentToolSelection>;
-  /** Skill frontmatter names from this plugin's manifest skill roots.
-   * Duplicate or unknown names reject this plugin's complete selection. */
-  skills: string[];
+  /** Skill frontmatter names from this plugin's manifest skill roots, or
+   * object selections that fill predefined generated slots in the skill.
+   * Duplicate or unknown names and malformed slot values reject this plugin's
+   * complete selection. A selected skill with missing or duplicate slot
+   * markers is omitted from the resolved catalog. */
+  skills: Array<string | PluginAgentSkillSelection>;
   /** Optional dynamic instructions. Output is truncated to 4096 characters. */
   instructions?: string;
 }

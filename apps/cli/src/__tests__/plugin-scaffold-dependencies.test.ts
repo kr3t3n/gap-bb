@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import {
   PLUGIN_SERVER_EXTERNALS,
   RUNTIME_SLOT_BY_SPECIFIER,
+  SHIMMED_TYPE_PACKAGES,
 } from "@bb/plugin-build";
 import { scaffoldPlugin } from "@bb/templates/plugin-scaffold";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -79,7 +80,11 @@ function packageNameOf(specifier: string): string {
 async function scaffoldWithDependencies(args: {
   workDir: string;
   app: boolean;
-}): Promise<{ targetDir: string; dependencies: string[] }> {
+}): Promise<{
+  targetDir: string;
+  dependencies: string[];
+  devDependencies: string[];
+}> {
   const packageName = `bb-plugin-${args.app ? "app" : "headless"}`;
   const targetDir = join(args.workDir, packageName);
   await scaffoldPlugin({
@@ -88,10 +93,15 @@ async function scaffoldWithDependencies(args: {
     bbVersion: "0.9.0",
     app: args.app,
   });
-  const manifest: { dependencies?: Record<string, string> } = JSON.parse(
-    await readFile(join(targetDir, "package.json"), "utf8"),
-  );
-  return { targetDir, dependencies: Object.keys(manifest.dependencies ?? {}) };
+  const manifest: {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  } = JSON.parse(await readFile(join(targetDir, "package.json"), "utf8"));
+  return {
+    targetDir,
+    dependencies: Object.keys(manifest.dependencies ?? {}),
+    devDependencies: Object.keys(manifest.devDependencies ?? {}),
+  };
 }
 
 describe("scaffold dependency classification", () => {
@@ -133,6 +143,28 @@ describe("scaffold dependency classification", () => {
       expect(misdeclared).toEqual([]);
     },
   );
+
+  /**
+   * The flip side of the shim (#2072): esbuild never reads a shimmed package
+   * from node_modules, but tsc does, so every shimmed npm package has to be
+   * installed for types — as a devDependency — or the documented
+   * `import { toast } from "sonner"` fails to typecheck in a fresh scaffold.
+   * Derived from the build's shim table, so adding a slot without declaring
+   * its types fails here.
+   */
+  it("declares every runtime-shimmed package as a type-only devDependency of an app scaffold", async () => {
+    const { dependencies, devDependencies } = await scaffoldWithDependencies({
+      workDir,
+      app: true,
+    });
+
+    expect(
+      SHIMMED_TYPE_PACKAGES.filter((name) => !devDependencies.includes(name)),
+    ).toEqual([]);
+    expect(
+      SHIMMED_TYPE_PACKAGES.filter((name) => dependencies.includes(name)),
+    ).toEqual([]);
+  });
 
   it("keeps host-provided packages out of dependencies", async () => {
     const { dependencies } = await scaffoldWithDependencies({

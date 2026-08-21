@@ -1,0 +1,241 @@
+import { describe, expect, it } from "vitest";
+import * as core from "./core.js";
+
+function editable() {
+  return core.editableWorkflowConfig(
+    core.cloneWorkflowConfig(core.DEFAULT_WORKFLOW_CONFIG),
+  );
+}
+
+function thread(
+  overrides: Partial<core.OrganizableThread> = {},
+): core.OrganizableThread {
+  return {
+    archivedAt: null,
+    childOrigin: null,
+    deletedAt: null,
+    lastReadAt: 20,
+    latestAttentionAt: 10,
+    originKind: null,
+    originPluginId: null,
+    parentThreadId: null,
+    sourceThreadId: null,
+    status: "idle",
+    visibility: "visible",
+    ...overrides,
+  };
+}
+
+describe("workflow configuration", () => {
+  it("ships the approved starter stages without emoji labels", () => {
+    expect(
+      core.DEFAULT_WORKFLOW_CONFIG.stages.map(({ key, title, icon }) => ({
+        key,
+        title,
+        icon,
+      })),
+    ).toEqual([
+      { key: "inbox", title: "Inbox", icon: "Mail" },
+      {
+        key: "planning",
+        title: "Planning",
+        icon: "ListTodo",
+      },
+      {
+        key: "spec-review",
+        title: "Spec Review",
+        icon: "FileView",
+      },
+      {
+        key: "building",
+        title: "Building",
+        icon: "Code",
+      },
+      {
+        key: "testing-deploy",
+        title: "Testing / Deploy",
+        icon: "Beaker",
+      },
+      {
+        key: "handoff",
+        title: "Handoff",
+        icon: "ArrowRight",
+      },
+      {
+        key: "on-hold",
+        title: "On Hold",
+        icon: "Pause",
+      },
+    ]);
+  });
+
+  it("allows Inbox presentation changes while preserving its system role", () => {
+    const next = editable();
+    next.stages[0] = {
+      ...next.stages[0]!,
+      title: "Needs Me",
+      icon: "MailOpen",
+    };
+
+    expect(core.normalizeEditableWorkflowConfig(next).stages[0]).toMatchObject({
+      key: "inbox",
+      title: "Needs Me",
+      icon: "MailOpen",
+      rule: core.INBOX_RULE,
+    });
+  });
+
+  it("rejects attempts to change Inbox logic or make titles ambiguous", () => {
+    const changedRule = editable();
+    changedRule.stages[0] = {
+      ...changedRule.stages[0]!,
+      rule: "Anything I want",
+    };
+    expect(() => core.normalizeEditableWorkflowConfig(changedRule)).toThrow(
+      "Inbox routing",
+    );
+
+    const duplicatedTitle = editable();
+    duplicatedTitle.stages[2] = {
+      ...duplicatedTitle.stages[2]!,
+      title: " planning ",
+    };
+    expect(() => core.normalizeEditableWorkflowConfig(duplicatedTitle)).toThrow(
+      "duplicated",
+    );
+  });
+
+  it("preserves native section identities across presentation edits", () => {
+    const current = core.cloneWorkflowConfig(core.DEFAULT_WORKFLOW_CONFIG);
+    current.stages.forEach((stage) => {
+      stage.sectionId = `section-${stage.key}`;
+    });
+    const next = core.editableWorkflowConfig(current);
+    next.stages[1] = { ...next.stages[1]!, title: "Shaping" };
+
+    expect(
+      core.mergeEditableWorkflowConfig(current, next).stages[1],
+    ).toMatchObject({
+      key: "planning",
+      title: "Shaping",
+      sectionId: "section-planning",
+    });
+  });
+
+  it("creates immutable, collision-free CLI keys for new stages", () => {
+    expect(core.createStageKey("Design QA", ["planning"])).toBe("design-qa");
+    expect(core.createStageKey("Design QA", ["design-qa"])).toBe("design-qa-2");
+  });
+
+  it("migrates the draft Inbox and Parked defaults without losing section ids", () => {
+    const legacy = {
+      version: 1,
+      defaultActiveStageKey: "planning",
+      stages: core.DEFAULT_WORKFLOW_CONFIG.stages.map((stage) => ({
+        ...stage,
+        policy: stage.role === "inbox" ? "system" : "agent",
+      })),
+    };
+    legacy.stages[0] = {
+      ...legacy.stages[0]!,
+      title: "Needs Me",
+      rule: "Idle unread threads requiring the user's attention. This stage is managed automatically.",
+      sectionId: "sec_inbox",
+    };
+    legacy.stages[6] = {
+      ...legacy.stages[6]!,
+      key: "parked",
+      title: "Parked",
+      rule: "Intentionally pausing work for later after explicit user direction.",
+      sectionId: "sec_parked",
+    };
+
+    expect(core.parseWorkflowConfig(legacy)?.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "inbox",
+          title: "Inbox",
+          sectionId: "sec_inbox",
+          rule: core.INBOX_RULE,
+        }),
+        expect.objectContaining({
+          key: "on-hold",
+          title: "On Hold",
+          sectionId: "sec_parked",
+        }),
+      ]),
+    );
+  });
+});
+
+describe("thread placement precedence", () => {
+  const config = core.cloneWorkflowConfig(core.DEFAULT_WORKFLOW_CONFIG);
+
+  it("keeps running work in its remembered stage even when unread", () => {
+    expect(
+      core.visibleStageForThread(
+        config,
+        thread({ status: "active", lastReadAt: 0, latestAttentionAt: 10 }),
+        "building",
+      ).key,
+    ).toBe("building");
+  });
+
+  it("routes idle unread work to Inbox without changing the remembered stage", () => {
+    expect(
+      core.visibleStageForThread(
+        config,
+        thread({ status: "idle", lastReadAt: 0, latestAttentionAt: 10 }),
+        "spec-review",
+      ).key,
+    ).toBe("inbox");
+    expect(
+      core.visibleStageForThread(config, thread(), "spec-review").key,
+    ).toBe("spec-review");
+  });
+
+  it("falls back to the first non-Inbox stage when a remembered stage vanished", () => {
+    expect(
+      core.visibleStageForThread(config, thread(), "removed-stage").key,
+    ).toBe("planning");
+  });
+});
+
+describe("agent guidance", () => {
+  it("generates the current taxonomy without movement-policy metadata", () => {
+    const config = core.cloneWorkflowConfig(core.DEFAULT_WORKFLOW_CONFIG);
+    config.stages[0] = { ...config.stages[0]!, title: "Needs Me" };
+    config.stages[1] = {
+      ...config.stages[1]!,
+      title: "Shaping",
+      rule: "Clarifying the outcome and constraints.",
+    };
+    const instructions = core.buildWorkflowSkillSlot(config);
+
+    expect(instructions).toContain("**Needs Me** is the protected Inbox");
+    expect(instructions).toContain(
+      "| planning | Shaping | Clarifying the outcome and constraints. |",
+    );
+    expect(instructions).toContain(
+      "| on-hold | On Hold | Work intentionally paused until a later time or external condition. |",
+    );
+    expect(instructions).not.toContain("Agent policy");
+    expect(instructions).not.toContain("user direction");
+    expect(instructions).not.toContain("bb organizer phase inbox");
+  });
+
+  it("contains no classifier or prompt-title derivation surface", () => {
+    expect(core).not.toHaveProperty("classifyPhase");
+    expect(core).not.toHaveProperty("deriveTaskTitle");
+    expect(core).not.toHaveProperty("parsePhaseTarget");
+  });
+});
+
+describe("thread safeguards", () => {
+  it("organizes ordinary roots and excludes side chats", () => {
+    expect(core.isManageableThread(thread())).toBe(true);
+    expect(core.isManageableThread(thread({ childOrigin: "side-chat" }))).toBe(
+      false,
+    );
+  });
+});

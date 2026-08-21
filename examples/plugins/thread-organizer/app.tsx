@@ -542,7 +542,7 @@ export function WorkflowSettings() {
     <div className="grid min-w-0 w-full max-w-3xl gap-4">
       <div className="flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3">
         <div className="min-w-60 flex-1">
-          <p className="text-sm leading-5 text-muted-foreground">
+          <p className="pl-px text-sm leading-5 text-muted-foreground">
             {workflowSettingsDescription}
           </p>
         </div>

@@ -752,16 +752,14 @@ describe("plugin tools reach thread runtime config", () => {
                     }
                   : "beta_tool",
               ],
-              skills: [
-                alpha
-                  ? {
-                      name: "alpha-skill",
-                      slots: {
-                        preferences: "Current host: " + context.host.name,
-                      },
-                    }
-                  : "beta-skill",
-              ],
+              skills: [alpha ? "alpha-skill" : "beta-skill"],
+              experimental_skillSlots: alpha
+                ? {
+                    "alpha-skill": {
+                      preferences: "Current host: " + context.host.name,
+                    },
+                  }
+                : undefined,
               instructions:
                 "context=" + JSON.stringify(context) +
                 ";factory=" + factoryCount +

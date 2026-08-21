@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { BbPluginApi } from "../index.js";
+import type { BbPluginApi, PluginAgentConfiguration } from "../index.js";
 
 type ExpectedBbPluginApiKey =
   | "agents"
@@ -27,7 +27,6 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "PluginAgents",
   "PluginAgentConfiguration",
   "PluginAgentConfigurationContext",
-  "PluginAgentSkillSelection",
   "PluginAgentToolContentPart",
   "PluginAgentToolContext",
   "PluginAgentToolExperimentalStatusLabels",
@@ -151,6 +150,12 @@ function rootExportNames(
 }
 
 describe("backend plugin SDK public surface", () => {
+  it("keeps the shipped skills selection contract string-only", () => {
+    expectTypeOf<PluginAgentConfiguration["skills"]>().toEqualTypeOf<
+      string[]
+    >();
+  });
+
   it("snapshots every BbPluginApi root member", () => {
     expectTypeOf<keyof BbPluginApi>().toEqualTypeOf<ExpectedBbPluginApiKey>();
   });

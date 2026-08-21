@@ -880,11 +880,11 @@ function normalizePluginAgentToolSelections(args: {
   return { toolIds, parameterOverrides };
 }
 
-function normalizePluginAgentSkillSelections(args: {
+function normalizePluginAgentSkillIds(args: {
   knownIds: ReadonlySet<string>;
   pluginId: string;
   value: unknown;
-}): Array<{ name: string; slots: Readonly<Record<string, string>> }> {
+}): string[] {
   if (!Array.isArray(args.value)) {
     throw new Error("configure() output.skills must be an array");
   }
@@ -893,75 +893,18 @@ function normalizePluginAgentSkillSelections(args: {
       `configure() output.skills exceeds the ${PLUGIN_AGENT_SELECTION_MAX_IDS}-id limit`,
     );
   }
-  const selected: Array<{
-    name: string;
-    slots: Readonly<Record<string, string>>;
-  }> = [];
+  const selected: string[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < args.value.length; index += 1) {
-    const entry = args.value[index];
-    let name: unknown;
-    let slots: Readonly<Record<string, string>> = {};
-    if (typeof entry === "string") {
-      name = entry;
-    } else if (
-      typeof entry === "object" &&
-      entry !== null &&
-      !Array.isArray(entry)
-    ) {
-      const typed = entry as Record<string, unknown>;
-      const unknownKeys = Object.keys(typed)
-        .filter((key) => !["name", "slots"].includes(key))
-        .sort();
-      if (unknownKeys.length > 0) {
-        throw new Error(
-          `configure() output.skills[${index}] contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}`,
-        );
-      }
-      name = typed.name;
-      if (
-        typeof typed.slots !== "object" ||
-        typed.slots === null ||
-        Array.isArray(typed.slots)
-      ) {
-        throw new Error(
-          `configure() output.skills[${index}].slots must be an object`,
-        );
-      }
-      const entries = Object.entries(typed.slots);
-      if (entries.length > PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT) {
-        throw new Error(
-          `configure() output.skills[${index}].slots exceeds the ${PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT}-slot limit`,
-        );
-      }
-      slots = Object.fromEntries(
-        entries.map(([slotName, content]) => {
-          if (!PLUGIN_AGENT_SKILL_SLOT_NAME_PATTERN.test(slotName)) {
-            throw new Error(
-              `configure() output.skills[${index}].slots has invalid slot name ${JSON.stringify(slotName)}`,
-            );
-          }
-          if (typeof content !== "string") {
-            throw new Error(
-              `configure() output.skills[${index}].slots[${JSON.stringify(slotName)}] must be a string`,
-            );
-          }
-          if (content.length > PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS) {
-            throw new Error(
-              `configure() output.skills[${index}].slots[${JSON.stringify(slotName)}] exceeds the ${PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS}-character limit`,
-            );
-          }
-          return [slotName, content] as const;
-        }),
-      );
-    } else {
+    const name = args.value[index];
+    if (typeof name !== "string") {
       throw new Error(
-        `configure() output.skills[${index}] must be a skill name or { name, slots }`,
+        `configure() output.skills[${index}] must be a skill name`,
       );
     }
-    if (typeof name !== "string" || name.length === 0) {
+    if (name.length === 0) {
       throw new Error(
-        `configure() output.skills[${index}] must ${typeof entry === "string" ? "be" : "name"} a non-empty string`,
+        `configure() output.skills[${index}] must be a non-empty string`,
       );
     }
     if (seen.has(name)) {
@@ -975,9 +918,83 @@ function normalizePluginAgentSkillSelections(args: {
       );
     }
     seen.add(name);
-    selected.push({ name, slots });
+    selected.push(name);
   }
   return selected;
+}
+
+function normalizePluginAgentSkillSlots(args: {
+  knownIds: ReadonlySet<string>;
+  pluginId: string;
+  selectedIds: ReadonlySet<string>;
+  value: unknown;
+}): Map<string, Readonly<Record<string, string>>> {
+  if (args.value === undefined) return new Map();
+  if (
+    typeof args.value !== "object" ||
+    args.value === null ||
+    Array.isArray(args.value)
+  ) {
+    throw new Error(
+      "configure() output.experimental_skillSlots must be an object",
+    );
+  }
+  const skillEntries = Object.entries(args.value);
+  if (skillEntries.length > PLUGIN_AGENT_SELECTION_MAX_IDS) {
+    throw new Error(
+      `configure() output.experimental_skillSlots exceeds the ${PLUGIN_AGENT_SELECTION_MAX_IDS}-skill limit`,
+    );
+  }
+  return new Map(
+    skillEntries.map(([skillName, rawSlots]) => {
+      if (!args.knownIds.has(skillName)) {
+        throw new Error(
+          `configure() output.experimental_skillSlots selected unknown skill id ${JSON.stringify(skillName)} owned by plugin ${JSON.stringify(args.pluginId)}`,
+        );
+      }
+      if (!args.selectedIds.has(skillName)) {
+        throw new Error(
+          `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}] requires the skill to be selected in output.skills`,
+        );
+      }
+      if (
+        typeof rawSlots !== "object" ||
+        rawSlots === null ||
+        Array.isArray(rawSlots)
+      ) {
+        throw new Error(
+          `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}] must be an object`,
+        );
+      }
+      const slotEntries = Object.entries(rawSlots);
+      if (slotEntries.length > PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT) {
+        throw new Error(
+          `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}] exceeds the ${PLUGIN_AGENT_SKILL_SLOT_MAX_COUNT}-slot limit`,
+        );
+      }
+      const slots = Object.fromEntries(
+        slotEntries.map(([slotName, content]) => {
+          if (!PLUGIN_AGENT_SKILL_SLOT_NAME_PATTERN.test(slotName)) {
+            throw new Error(
+              `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}] has invalid slot name ${JSON.stringify(slotName)}`,
+            );
+          }
+          if (typeof content !== "string") {
+            throw new Error(
+              `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}][${JSON.stringify(slotName)}] must be a string`,
+            );
+          }
+          if (content.length > PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS) {
+            throw new Error(
+              `configure() output.experimental_skillSlots[${JSON.stringify(skillName)}][${JSON.stringify(slotName)}] exceeds the ${PLUGIN_AGENT_SKILL_SLOT_CONTENT_MAX_CHARS}-character limit`,
+            );
+          }
+          return [slotName, content] as const;
+        }),
+      );
+      return [skillName, slots] as const;
+    }),
+  );
 }
 
 function normalizePluginAgentConfiguration(args: {
@@ -997,7 +1014,15 @@ function normalizePluginAgentConfiguration(args: {
   }
   const output = args.value as Record<string, unknown>;
   const unknownKeys = Object.keys(output)
-    .filter((key) => !["tools", "skills", "instructions"].includes(key))
+    .filter(
+      (key) =>
+        ![
+          "tools",
+          "skills",
+          "instructions",
+          "experimental_skillSlots",
+        ].includes(key),
+    )
     .sort();
   if (unknownKeys.length > 0) {
     throw new Error(
@@ -1023,14 +1048,24 @@ function normalizePluginAgentConfiguration(args: {
     pluginId: args.pluginId,
     value: output.tools,
   });
+  const skillIds = normalizePluginAgentSkillIds({
+    knownIds: args.knownSkillIds,
+    pluginId: args.pluginId,
+    value: output.skills,
+  });
+  const skillSlots = normalizePluginAgentSkillSlots({
+    knownIds: args.knownSkillIds,
+    pluginId: args.pluginId,
+    selectedIds: new Set(skillIds),
+    value: output.experimental_skillSlots,
+  });
   return {
     toolIds: toolSelections.toolIds,
     toolParameterOverrides: toolSelections.parameterOverrides,
-    skillSelections: normalizePluginAgentSkillSelections({
-      knownIds: args.knownSkillIds,
-      pluginId: args.pluginId,
-      value: output.skills,
-    }),
+    skillSelections: skillIds.map((name) => ({
+      name,
+      slots: skillSlots.get(name) ?? {},
+    })),
     instructions,
   };
 }

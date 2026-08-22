@@ -483,7 +483,6 @@ export function isManageableThread(thread: OrganizableThread): boolean {
     thread.sourceThreadId === null &&
     thread.originKind === null &&
     (thread.childOrigin ?? null) === null &&
-    thread.originPluginId === null &&
     thread.archivedAt === null &&
     thread.deletedAt === null
   );

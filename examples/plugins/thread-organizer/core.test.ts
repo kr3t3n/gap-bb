@@ -275,9 +275,15 @@ describe("agent guidance", () => {
 });
 
 describe("thread safeguards", () => {
-  it("organizes ordinary roots and excludes side chats", () => {
+  it("organizes visible automation roots and excludes side chats", () => {
     expect(core.isManageableThread(thread())).toBe(true);
+    expect(
+      core.isManageableThread(thread({ originPluginId: "automations" })),
+    ).toBe(true);
     expect(core.isManageableThread(thread({ childOrigin: "side-chat" }))).toBe(
+      false,
+    );
+    expect(core.isManageableThread(thread({ visibility: "hidden" }))).toBe(
       false,
     );
   });

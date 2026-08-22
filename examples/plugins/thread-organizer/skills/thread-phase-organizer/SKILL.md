@@ -25,7 +25,7 @@ agent-driven stage transition.
 
 <!-- bb:skill-slot workflow:start -->
 
-**Inbox** is the protected Inbox section. Idle unread threads go there automatically. This routing behavior can’t be customized; never choose Inbox yourself.
+**Inbox** is the protected Inbox section. Idle unread threads go there automatically and stay until work resumes. This routing behavior can’t be customized; never choose Inbox yourself.
 
 | Key            | Section          | What belongs here                                                                |
 | -------------- | ---------------- | -------------------------------------------------------------------------------- |

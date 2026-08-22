@@ -185,7 +185,12 @@ export interface OrganizableThread {
 }
 
 export const INBOX_RULE =
-  "Idle unread threads that need your attention appear here automatically. This behavior can’t be customized.";
+  "Idle unread threads that need your attention appear here automatically and stay until work resumes. This behavior can’t be customized.";
+
+const PREVIOUS_INBOX_RULES = [
+  "Idle unread threads that need your attention appear here automatically. This behavior can’t be customized.",
+  "Idle unread threads requiring the user's attention. This stage is managed automatically.",
+] as const;
 
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   version: WORKFLOW_CONFIG_VERSION,
@@ -346,11 +351,9 @@ function migrateDraftStage(stage: WorkflowStage): WorkflowStage {
     return {
       ...stage,
       title: stage.title === "Needs Me" ? "Inbox" : stage.title,
-      rule:
-        stage.rule ===
-        "Idle unread threads requiring the user's attention. This stage is managed automatically."
-          ? INBOX_RULE
-          : stage.rule,
+      rule: PREVIOUS_INBOX_RULES.some((rule) => rule === stage.rule)
+        ? INBOX_RULE
+        : stage.rule,
     };
   }
   if (
@@ -500,18 +503,27 @@ export function isUnreadThread(thread: OrganizableThread): boolean {
   return (thread.lastReadAt ?? 0) < thread.latestAttentionAt;
 }
 
-export function visibleStageForThread(
+export interface ThreadPlacement {
+  inboxLatched: boolean;
+  stage: WorkflowStage;
+}
+
+export function placementForThread(
   config: WorkflowConfig,
   thread: OrganizableThread,
   rememberedStageKey: string,
-): WorkflowStage {
+  inboxLatched: boolean,
+): ThreadPlacement {
   const remembered =
     config.stages.find(
       (stage) => stage.key === rememberedStageKey && stage.role === "stage",
     ) ?? firstWorkflowStage(config);
-  return isRunningThread(thread) || !isUnreadThread(thread)
-    ? remembered
-    : inboxStage(config);
+  const nextInboxLatched =
+    !isRunningThread(thread) && (inboxLatched || isUnreadThread(thread));
+  return {
+    inboxLatched: nextInboxLatched,
+    stage: nextInboxLatched ? inboxStage(config) : remembered,
+  };
 }
 
 function escapeTableCell(value: string): string {
@@ -526,7 +538,7 @@ export function buildWorkflowSkillSlot(config: WorkflowConfig): string {
         `| ${stage.key} | ${escapeTableCell(stage.title)} | ${escapeTableCell(stage.rule)} |`,
     );
   return [
-    `**${escapeTableCell(inboxStage(config).title)}** is the protected Inbox section. Idle unread threads go there automatically. This routing behavior can’t be customized; never choose Inbox yourself.`,
+    `**${escapeTableCell(inboxStage(config).title)}** is the protected Inbox section. Idle unread threads go there automatically and stay until work resumes. This routing behavior can’t be customized; never choose Inbox yourself.`,
     "",
     "| Key | Section | What belongs here |",
     "| --- | --- | --- |",

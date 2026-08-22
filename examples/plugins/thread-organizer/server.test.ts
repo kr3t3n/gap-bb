@@ -323,7 +323,7 @@ describe("Thread Organizer server", () => {
     await organizer.harness.lifecycle.dispose();
   });
 
-  it("applies running, unread, and read precedence without classifying text", async () => {
+  it("keeps Inbox sticky across read changes until work resumes", async () => {
     const organizer = createHarness();
     await plugin(organizer.bb);
     const config = await configFor(organizer);
@@ -351,11 +351,62 @@ describe("Thread Organizer server", () => {
       thread: organizer.current(),
       lastAssistantText: null,
     });
+    expect(organizer.current().sectionId).toBe(sectionId("inbox"));
+
+    organizer.setThread({ lastReadAt: 0 });
+    organizer.emitChanged();
+    await vi.waitFor(() =>
+      expect(organizer.current().sectionId).toBe(sectionId("inbox")),
+    );
+
+    organizer.setThread({ status: "starting" });
+    await organizer.harness.behavior.emitThreadEvent("thread.active", {
+      thread: organizer.current(),
+    });
     expect(organizer.current().sectionId).toBe(sectionId("planning"));
     expect(
       organizer.harness.inspection.sdk.callsTo("threads.promptHistory"),
     ).toHaveLength(0);
     expect(organizer.spawnThread).not.toHaveBeenCalled();
+    await organizer.harness.lifecycle.dispose();
+  });
+
+  it("migrates an existing Inbox placement into sticky state", async () => {
+    const organizer = createHarness();
+    organizer.setThread({
+      status: "idle",
+      lastReadAt: 10,
+      latestAttentionAt: 10,
+      sectionId: "sec_1",
+    });
+    await organizer.bb.storage.kv.set("thread:v3:thr_test", {
+      version: 3,
+      rememberedStageKey: "planning",
+      lastObservedSectionId: "sec_1",
+    });
+    await plugin(organizer.bb);
+    const config = await configFor(organizer);
+    const inboxId = config.stages.find(
+      (stage) => stage.key === "inbox",
+    )!.sectionId;
+    const planningId = config.stages.find(
+      (stage) => stage.key === "planning",
+    )!.sectionId;
+
+    await organizer.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: organizer.current(),
+      lastAssistantText: null,
+    });
+    expect(organizer.current().sectionId).toBe(inboxId);
+    await expect(
+      organizer.bb.storage.kv.get("thread:v3:thr_test"),
+    ).resolves.toMatchObject({ version: 4, inboxLatched: true });
+
+    organizer.setThread({ status: "starting" });
+    await organizer.harness.behavior.emitThreadEvent("thread.active", {
+      thread: organizer.current(),
+    });
+    expect(organizer.current().sectionId).toBe(planningId);
     await organizer.harness.lifecycle.dispose();
   });
 
@@ -493,6 +544,12 @@ describe("Thread Organizer server", () => {
     await organizer.harness.behavior.emitThreadEvent("thread.idle", {
       thread: organizer.current(),
       lastAssistantText: null,
+    });
+    expect(organizer.current().sectionId).toBe(sectionId("inbox"));
+
+    organizer.setThread({ status: "starting" });
+    await organizer.harness.behavior.emitThreadEvent("thread.active", {
+      thread: organizer.current(),
     });
     expect(organizer.current().sectionId).toBe(sectionId("on-hold"));
     await organizer.harness.lifecycle.dispose();

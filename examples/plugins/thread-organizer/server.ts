@@ -15,8 +15,8 @@ import {
   legacySectionNames,
   mergeEditableWorkflowConfig,
   parseWorkflowConfig,
+  placementForThread,
   stageForSectionId,
-  visibleStageForThread,
   type EditableWorkflowConfig,
   type OrganizableThread,
   type WorkflowConfig,
@@ -93,9 +93,10 @@ type Section = Awaited<
 >[number];
 
 interface ThreadWorkflowState {
+  inboxLatched: boolean;
   lastObservedSectionId: string | null;
   rememberedStageKey: string;
-  version: 3;
+  version: 4;
 }
 
 type PendingConfigOperation = z.infer<typeof pendingConfigOperationSchema>;
@@ -364,14 +365,24 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   async function readThreadState(thread: Thread): Promise<ThreadWorkflowState> {
     const stored = await bb.storage.kv.get<unknown>(threadStateKey(thread.id));
     if (stored && typeof stored === "object") {
-      const value = stored as Partial<ThreadWorkflowState>;
+      const value = stored as {
+        inboxLatched?: unknown;
+        lastObservedSectionId?: unknown;
+        rememberedStageKey?: unknown;
+        version?: unknown;
+      };
       const remembered = configSnapshot.stages.find(
         (stage) =>
           stage.key === value.rememberedStageKey && stage.role === "stage",
       );
-      if (value.version === 3 && remembered) {
+      if ((value.version === 3 || value.version === 4) && remembered) {
         return {
-          version: 3,
+          version: 4,
+          inboxLatched:
+            value.version === 4 && typeof value.inboxLatched === "boolean"
+              ? value.inboxLatched
+              : stageForSectionId(configSnapshot, thread.sectionId)?.role ===
+                "inbox",
           rememberedStageKey: remembered.key,
           lastObservedSectionId:
             typeof value.lastObservedSectionId === "string" ||
@@ -399,7 +410,9 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       }
     }
     const migrated: ThreadWorkflowState = {
-      version: 3,
+      version: 4,
+      inboxLatched:
+        stageForSectionId(configSnapshot, thread.sectionId)?.role === "inbox",
       rememberedStageKey: remembered.key,
       lastObservedSectionId: thread.sectionId,
     };
@@ -591,11 +604,14 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       state.rememberedStageKey = firstWorkflowStage(configSnapshot).key;
     }
 
-    const destination = visibleStageForThread(
+    const placement = placementForThread(
       configSnapshot,
       thread,
       state.rememberedStageKey,
+      state.inboxLatched,
     );
+    state.inboxLatched = placement.inboxLatched;
+    const destination = placement.stage;
     if (!destination.sectionId) {
       throw new Error(`Stage ${destination.key} has no native section.`);
     }

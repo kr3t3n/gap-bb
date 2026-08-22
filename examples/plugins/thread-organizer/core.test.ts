@@ -172,6 +172,24 @@ describe("workflow configuration", () => {
       ]),
     );
   });
+
+  it("migrates the previous protected Inbox rule without resetting custom stages", () => {
+    const stored = core.cloneWorkflowConfig(core.DEFAULT_WORKFLOW_CONFIG);
+    stored.stages[0] = {
+      ...stored.stages[0]!,
+      rule: "Idle unread threads that need your attention appear here automatically. This behavior can’t be customized.",
+    };
+    stored.stages[1] = { ...stored.stages[1]!, title: "Shaping" };
+
+    const migrated = core.parseWorkflowConfig(stored);
+
+    expect(
+      migrated?.stages.find((stage) => stage.key === "inbox"),
+    ).toMatchObject({ rule: core.INBOX_RULE });
+    expect(
+      migrated?.stages.find((stage) => stage.key === "planning"),
+    ).toMatchObject({ title: "Shaping" });
+  });
 });
 
 describe("thread placement precedence", () => {
@@ -179,30 +197,36 @@ describe("thread placement precedence", () => {
 
   it("keeps running work in its remembered stage even when unread", () => {
     expect(
-      core.visibleStageForThread(
+      core.placementForThread(
         config,
         thread({ status: "active", lastReadAt: 0, latestAttentionAt: 10 }),
         "building",
-      ).key,
-    ).toBe("building");
+        true,
+      ),
+    ).toMatchObject({ inboxLatched: false, stage: { key: "building" } });
   });
 
-  it("routes idle unread work to Inbox without changing the remembered stage", () => {
+  it("latches idle unread work in Inbox until work resumes", () => {
     expect(
-      core.visibleStageForThread(
+      core.placementForThread(
         config,
         thread({ status: "idle", lastReadAt: 0, latestAttentionAt: 10 }),
         "spec-review",
-      ).key,
-    ).toBe("inbox");
+        false,
+      ),
+    ).toMatchObject({ inboxLatched: true, stage: { key: "inbox" } });
     expect(
-      core.visibleStageForThread(config, thread(), "spec-review").key,
-    ).toBe("spec-review");
+      core.placementForThread(config, thread(), "spec-review", true),
+    ).toMatchObject({ inboxLatched: true, stage: { key: "inbox" } });
+    expect(
+      core.placementForThread(config, thread(), "spec-review", false),
+    ).toMatchObject({ inboxLatched: false, stage: { key: "spec-review" } });
   });
 
   it("falls back to the first non-Inbox stage when a remembered stage vanished", () => {
     expect(
-      core.visibleStageForThread(config, thread(), "removed-stage").key,
+      core.placementForThread(config, thread(), "removed-stage", false).stage
+        .key,
     ).toBe("planning");
   });
 });

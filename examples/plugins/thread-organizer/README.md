@@ -12,8 +12,8 @@ package.
 ## Behavior
 
 - Running threads appear in their remembered workflow stage.
-- Idle unread threads appear in Inbox.
-- Reading an idle thread restores its remembered stage.
+- Idle unread threads appear in Inbox and stay there until work resumes.
+- Read and unread changes do not move a thread after it reaches Inbox.
 - A user move or `bb organizer phase <stage-key>` changes the remembered stage.
 - Inbox keeps that system behavior even when its visible title or icon changes.
 - Inbox starts expanded. Other configured sections start collapsed until the

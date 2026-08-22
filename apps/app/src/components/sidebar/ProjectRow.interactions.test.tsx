@@ -285,7 +285,7 @@ describe("ProjectRow interactions", () => {
     expect(
       document.querySelector('[data-sidebar-section-id="sec_building"]'),
     ).toBeNull();
-    fireEvent.click(exit, { ctrlKey: true });
+    fireEvent.keyDown(exit, { ctrlKey: true, key: "Enter" });
     expect(
       document.querySelector('[data-sidebar-section-id="sec_building"]'),
     ).not.toBeNull();

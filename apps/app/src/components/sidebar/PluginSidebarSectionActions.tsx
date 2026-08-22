@@ -162,6 +162,18 @@ export function PluginSidebarSectionInlineAction({
           aria-label={label}
           aria-pressed={action.presentation.pressed}
           disabled={action.presentation.disabled}
+          onKeyDown={(event) => {
+            if (
+              !requiresPrimaryModifier(action) ||
+              (event.key !== "Enter" && event.key !== " ") ||
+              !canActivateWithModifiers(action, event)
+            ) {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            onRun(action);
+          }}
           onClick={(event) => {
             event.stopPropagation();
             if (!canActivateWithModifiers(action, event)) return;

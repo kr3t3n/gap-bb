@@ -1400,6 +1400,7 @@ export default definePluginApp((app) => {
   app.slots.experimental_sidebarSectionAction({
     id: "fullscreen",
     placement: "inline-preferred",
+    experimental_requiresPrimaryModifier: true,
     presentation: ({ section, sidebar }) => {
       const pressed = sidebar.experimental_fullscreenSectionId === section.id;
       return {
@@ -1431,7 +1432,10 @@ the current title, icon, pressed state, and optional disabled state; `run`
 receives the same live context. The host places a pressed action inline, then
 at most one inactive `inline-preferred` action, and puts remaining actions in
 the section's existing overflow menu. Unknown icon names are omitted while the
-accessible title remains. Use
+accessible title remains. Set
+`experimental_requiresPrimaryModifier: true` when the action should run only
+while the user holds Command on macOS or Control elsewhere during click,
+Enter, or Space activation. Use
 `sidebar.experimental_setFullscreenSection(sectionId | null)` for section
 fullscreen behavior; this state is client-local and the host suspends it while
 search is active.

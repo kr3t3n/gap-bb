@@ -196,6 +196,7 @@ describe("ProjectRow interactions", () => {
         {
           id: "fullscreen",
           placement: "inline-preferred",
+          experimental_requiresPrimaryModifier: true,
           presentation: ({ section, sidebar }) => {
             const pressed =
               sidebar.experimental_fullscreenSectionId === section.id;
@@ -261,18 +262,30 @@ describe("ProjectRow interactions", () => {
     const planning = document.querySelector<HTMLElement>(
       '[data-sidebar-section-id="sec_planning"]',
     )!;
-    fireEvent.click(
-      within(planning).getByRole("button", { name: "Full Screen Section" }),
-    );
+    const enter = within(planning).getByRole("button", {
+      name: "Full Screen Section (Command/Ctrl-click)",
+    });
+    fireEvent.click(enter);
+    expect(
+      document.querySelector('[data-sidebar-section-id="sec_building"]'),
+    ).not.toBeNull();
+
+    fireEvent.click(enter, { metaKey: true });
 
     expect(
       document.querySelector('[data-sidebar-section-id="sec_building"]'),
     ).toBeNull();
-    const exit = screen.getByRole("button", { name: "Exit Full Screen" });
+    const exit = screen.getByRole("button", {
+      name: "Exit Full Screen (Command/Ctrl-click)",
+    });
     expect(exit.getAttribute("aria-pressed")).toBe("true");
     expect(exit.querySelector('[data-icon="Minimize2"]')).not.toBeNull();
 
     fireEvent.click(exit);
+    expect(
+      document.querySelector('[data-sidebar-section-id="sec_building"]'),
+    ).toBeNull();
+    fireEvent.click(exit, { ctrlKey: true });
     expect(
       document.querySelector('[data-sidebar-section-id="sec_building"]'),
     ).not.toBeNull();
@@ -298,8 +311,7 @@ describe("ProjectRow interactions", () => {
               sidebar.experimental_fullscreenSectionId === section.id
                 ? "Minimize2"
                 : "Maximize2",
-            pressed:
-              sidebar.experimental_fullscreenSectionId === section.id,
+            pressed: sidebar.experimental_fullscreenSectionId === section.id,
           }),
           run: ({ section, sidebar }) => {
             sidebar.experimental_setFullscreenSection(section.id);

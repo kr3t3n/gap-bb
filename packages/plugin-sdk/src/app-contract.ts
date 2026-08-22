@@ -656,6 +656,11 @@ export interface PluginSidebarSectionActionRegistration {
   id: string;
   /** Preferred inline placement; extra actions overflow into the row menu. */
   placement?: "inline-preferred" | "menu";
+  /**
+   * Require the platform primary modifier (Command on macOS, Control
+   * elsewhere) to remain held while the user activates this action.
+   */
+  experimental_requiresPrimaryModifier?: boolean;
   presentation(
     context: PluginSidebarSectionActionContext,
   ): PluginSidebarSectionActionPresentation | null;

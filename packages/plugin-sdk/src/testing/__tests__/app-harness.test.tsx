@@ -1216,13 +1216,20 @@ describe("loadPluginApp", () => {
         builder.slots.experimental_sidebarSectionAction({
           id: "fullscreen",
           placement: "inline-preferred",
+          experimental_requiresPrimaryModifier: true,
           presentation,
           run,
         });
       }),
     );
     expect(captured.sidebarSectionActions).toEqual([
-      { id: "fullscreen", placement: "inline-preferred", presentation, run },
+      {
+        id: "fullscreen",
+        placement: "inline-preferred",
+        experimental_requiresPrimaryModifier: true,
+        presentation,
+        run,
+      },
     ]);
 
     await expect(
@@ -1239,6 +1246,22 @@ describe("loadPluginApp", () => {
       ),
     ).rejects.toThrow(
       'slots.experimental_sidebarSectionAction: "placement" must be "inline-preferred" or "menu"',
+    );
+
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_sidebarSectionAction({
+            id: "invalid-modifier",
+            // @ts-expect-error deliberate host validation coverage
+            experimental_requiresPrimaryModifier: "yes",
+            presentation,
+            run,
+          });
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.experimental_sidebarSectionAction: "experimental_requiresPrimaryModifier" must be a boolean',
     );
 
     await expect(

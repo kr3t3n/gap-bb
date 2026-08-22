@@ -29,15 +29,19 @@ runs with that same context. The host keeps pressed actions inline, admits at
 most one inactive inline-preferred action, and moves remaining actions into the
 existing section overflow menu. The sidebar context includes client-local
 section fullscreen state and a setter, so a plugin can implement a direct
-toggle without owning sidebar markup.
+toggle without owning sidebar markup. The optional
+`experimental_requiresPrimaryModifier` flag requires the platform primary
+modifier to remain held during click or keyboard activation when entering the
+surface should be intentionally harder than an ordinary row action.
 
 **Audit before stabilizing.** Confirm one inactive inline action is the right
 budget at compact and zoomed widths; verify arbitration remains deterministic
 when several plugins contribute pressed actions; decide whether fullscreen
 state should include plugin ownership or remain a section id; test disable,
 uninstall, removed-section, search, keyboard, and screen-reader behavior; and
-confirm the callback surface is sufficiently declarative without allowing
-plugins to render arbitrary section-header components.
+confirm modifier-gated actions are discoverable without becoming easy to
+trigger accidentally. Confirm the callback surface is sufficiently declarative
+without allowing plugins to render arbitrary section-header components.
 
 ## `experimental_buildBridgeToolCallContent`
 

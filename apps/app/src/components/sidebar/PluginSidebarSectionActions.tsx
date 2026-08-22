@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   PluginSidebarSectionActionContext,
   PluginSidebarSectionActionPresentation,
@@ -35,6 +35,27 @@ export interface PluginSidebarSectionActionResolution {
   inlineAction: ResolvedPluginSidebarSectionAction | null;
   overflowActions: readonly ResolvedPluginSidebarSectionAction[];
   run(action: ResolvedPluginSidebarSectionAction): void;
+}
+
+function requiresPrimaryModifier(
+  action: ResolvedPluginSidebarSectionAction,
+): boolean {
+  return action.slot.experimental_requiresPrimaryModifier === true;
+}
+
+function canActivateWithModifiers(
+  action: ResolvedPluginSidebarSectionAction,
+  modifiers: { ctrlKey: boolean; metaKey: boolean },
+): boolean {
+  return (
+    !requiresPrimaryModifier(action) || modifiers.metaKey || modifiers.ctrlKey
+  );
+}
+
+function activationLabel(action: ResolvedPluginSidebarSectionAction): string {
+  return requiresPrimaryModifier(action)
+    ? `${action.presentation.title} (Command/Ctrl-click)`
+    : action.presentation.title;
 }
 
 function resolvePresentation(
@@ -130,6 +151,7 @@ export function PluginSidebarSectionInlineAction({
   action: ResolvedPluginSidebarSectionAction;
   onRun: (action: ResolvedPluginSidebarSectionAction) => void;
 }) {
+  const label = activationLabel(action);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -137,11 +159,12 @@ export function PluginSidebarSectionInlineAction({
           type="button"
           variant="ghost"
           size="icon"
-          aria-label={action.presentation.title}
+          aria-label={label}
           aria-pressed={action.presentation.pressed}
           disabled={action.presentation.disabled}
           onClick={(event) => {
             event.stopPropagation();
+            if (!canActivateWithModifiers(action, event)) return;
             onRun(action);
           }}
           className={cn(
@@ -157,8 +180,38 @@ export function PluginSidebarSectionInlineAction({
           />
         </Button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{action.presentation.title}</TooltipContent>
+      <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
+  );
+}
+
+function PluginSidebarSectionOverflowItem({
+  action,
+  onRun,
+}: {
+  action: ResolvedPluginSidebarSectionAction;
+  onRun: (action: ResolvedPluginSidebarSectionAction) => void;
+}) {
+  const modifierHeldRef = useRef(false);
+  return (
+    <DropdownMenuItem
+      disabled={action.presentation.disabled}
+      onKeyDown={(event) => {
+        modifierHeldRef.current = event.metaKey || event.ctrlKey;
+      }}
+      onPointerDown={(event) => {
+        modifierHeldRef.current = event.metaKey || event.ctrlKey;
+      }}
+      onSelect={() => {
+        const canActivate =
+          !requiresPrimaryModifier(action) || modifierHeldRef.current;
+        modifierHeldRef.current = false;
+        if (canActivate) onRun(action);
+      }}
+    >
+      <Icon name={action.icon} aria-hidden="true" />
+      {activationLabel(action)}
+    </DropdownMenuItem>
   );
 }
 
@@ -170,13 +223,10 @@ export function PluginSidebarSectionOverflowItems({
   onRun: (action: ResolvedPluginSidebarSectionAction) => void;
 }) {
   return actions.map((action) => (
-    <DropdownMenuItem
+    <PluginSidebarSectionOverflowItem
+      action={action}
       key={action.key}
-      disabled={action.presentation.disabled}
-      onSelect={() => onRun(action)}
-    >
-      <Icon name={action.icon} aria-hidden="true" />
-      {action.presentation.title}
-    </DropdownMenuItem>
+      onRun={onRun}
+    />
   ));
 }

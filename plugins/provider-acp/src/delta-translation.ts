@@ -17,17 +17,13 @@
 
 import {
   errorEnvelopeSchema,
-  extractResultText,
   jsonRpcEnvelopeSchema,
   providerRawEventSchema,
-  toOptionalString,
   type JsonRpcMessage,
   type ProviderRawEvent,
   type ProviderRuntimeEvent,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type {
-  DeltaFileChange,
-  DeltaItemShape,
   DeltaNoTurnFallback,
   ThreadDelta,
   ThreadEventItemStatus,
@@ -50,14 +46,23 @@ import {
   acpWarningNotificationParamsSchema,
 } from "./bridge-protocol.js";
 import {
-  classifyAcpToolCall as classifyAcpToolCallOperation,
-  type AcpToolCallOperation,
-} from "./tool-call-operation.js";
+  COMPACTION_PRESENTATION,
+  fileChangePresentation,
+  planStepsPresentation,
+} from "./presentation.js";
+import {
+  classifyAcpToolCall,
+  extractAcpToolCallOutputText,
+  isInjectedToolCandidate,
+  type AcpClassifiedToolCall,
+  type AcpInjectedTool,
+} from "./tool-classification.js";
 import { acpVisibilityMetadata } from "./visibility.js";
 import {
   acpAgentMessageChunkUpdateSchema,
   acpAgentThoughtChunkUpdateSchema,
   acpPlanUpdateSchema,
+  acpToolCallRawOutputExitCodeSchema,
   acpToolCallUpdateEventSchema,
   acpUsageUpdateSchema,
   extractAcpContentText,
@@ -76,92 +81,39 @@ interface AcpDeltaTranslationContext {
 
 const ASSISTANT_STREAM_KEY = "assistant";
 const THOUGHT_STREAM_KEY = "thought";
-const INLINE_IMAGE_DATA_URL_PATTERN =
-  /data:image\/[a-z0-9.+-]+(?:;[^,]*)?;base64,[a-z0-9+/_=-]+/giu;
-
 const ACP_PLAN_STEP_STATUS_BY_ENTRY_STATUS = {
   pending: "pending",
   in_progress: "active",
   completed: "completed",
 } as const;
 
+/** Each ACP plan snapshot is its own settled item; the latest supersedes. */
+const PLAN_STEPS_CHANNEL = "planSteps";
+
 // ---------------------------------------------------------------------------
 // Pure ACP parsing helpers
 // ---------------------------------------------------------------------------
 
-function extractAcpToolCallOutputText(
-  event: AcpToolCallUpdateEvent,
-): string | undefined {
-  const chunks: string[] = [];
-  for (const entry of event.content ?? []) {
-    if (entry.type !== "content") {
-      continue;
-    }
-    const text = extractAcpContentText(entry.content);
-    if (text) {
-      chunks.push(text);
-    }
-  }
-  if (chunks.length > 0) {
-    return chunks.join("\n");
-  }
-  if (event.rawOutput === undefined) {
-    return undefined;
-  }
-  // Some ACP agents echo MCP image results as data-URL attachments in
-  // rawOutput. Keep the useful envelope, but do not persist or render the
-  // potentially multi-megabyte payload in the thread timeline.
-  const rawOutputText = extractResultText(event.rawOutput)
-    .replace(INLINE_IMAGE_DATA_URL_PATTERN, "[image]")
-    .trim();
-  return rawOutputText.length > 0 ? rawOutputText : undefined;
-}
-
-function buildAcpFileChanges(
-  event: AcpToolCallUpdateEvent,
-  operation: Extract<AcpToolCallOperation, { kind: "file_change" }>,
-): DeltaFileChange[] {
-  const changes: DeltaFileChange[] = [];
-  for (const entry of event.content ?? []) {
-    if (entry.type !== "diff") {
-      continue;
-    }
-    const oldText = entry.oldText ?? undefined;
-    changes.push({
-      path: entry.path,
-      kind: oldText === undefined ? "add" : "update",
-      ...(oldText === undefined ? {} : { oldText }),
-      newText: entry.newText,
-    });
-  }
-  if (changes.length > 0) {
-    return changes;
-  }
-  const [path] = operation.paths;
-  return path === undefined ? [] : [{ path, kind: operation.changeKind }];
-}
-
 /**
- * Classify a (merged) tool_call event into its parsed item shape. The
- * command/file-change/generic decision is the shared classifier's — the
- * permission mapping (`interactions.ts`) uses the same one, so an approval
- * row and its timeline item can never disagree (#1803).
+ * The exit code a command-shaped close carries. ACP's status cannot stand in
+ * for one: Cursor reports a command that exited 1 AND a command that never
+ * spawned (its persistent shell's cwd was deleted, #1529) as
+ * `status: "completed"`, so deriving `0` from the status labelled both as
+ * successes. Use the agent's reported `rawOutput.exitCode` when present; with
+ * none, a failed call is still non-zero (1) and a completed call has no exit
+ * code rather than a fabricated one.
  */
-function classifyAcpToolCall(event: AcpToolCallUpdateEvent): DeltaItemShape {
-  const operation = classifyAcpToolCallOperation(event);
-  if (operation.kind === "command") {
-    return { type: "command", command: operation.command, cwd: "" };
+function extractAcpExitCode(
+  event: AcpToolCallUpdateEvent,
+  status: ThreadEventItemStatus,
+): number | undefined {
+  const reported = acpToolCallRawOutputExitCodeSchema.safeParse(
+    event.rawOutput,
+  );
+  if (reported.success) {
+    return reported.data.exitCode;
   }
-  if (operation.kind === "file_change") {
-    const changes = buildAcpFileChanges(event, operation);
-    if (changes.length > 0) {
-      return { type: "fileChange", changes };
-    }
-  }
-  return {
-    type: "tool",
-    tool: toOptionalString(event.title) ?? event.kind ?? "tool",
-  };
+  return status === "failed" ? 1 : undefined;
 }
 
 function isTerminalAcpStatus(
@@ -219,6 +171,19 @@ export function createAcpDeltaTranslator() {
    */
   const mergedToolCalls = new Map<string, AcpToolCallUpdateEvent>();
 
+  /**
+   * The bb-injected tools of the session, by name. One translator lives per
+   * session, so the set is session-wide.
+   */
+  let injectedToolsByName = new Map<string, AcpInjectedTool>();
+  /** The bb tool each unsettled call is bound to, by call key. */
+  const injectedToolBindings = new Map<string, AcpInjectedTool>();
+  /**
+   * bb tool calls the MCP proxy forwarded before the agent announced a
+   * matching tool_call, per thread, oldest first.
+   */
+  const pendingInjectedCalls = new Map<string, AcpInjectedTool[]>();
+
   function callKey(
     context: AcpDeltaTranslationContext | undefined,
     toolCallId: string,
@@ -240,7 +205,90 @@ export function createAcpDeltaTranslator() {
   ): void {
     for (const [key] of threadCallEntries(context)) {
       mergedToolCalls.delete(key);
+      injectedToolBindings.delete(key);
     }
+    pendingInjectedCalls.delete(context?.threadId ?? "");
+  }
+
+  // -------------------------------------------------------------------------
+  // bb-injected tools (Q31)
+  // -------------------------------------------------------------------------
+
+  function configureInjectedTools(tools: readonly AcpInjectedTool[]): void {
+    injectedToolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+  }
+
+  /** The injected tool a call's title names outright, if any. */
+  function injectedToolNamedBy(
+    event: AcpToolCallUpdateEvent,
+  ): AcpInjectedTool | undefined {
+    const title = event.title;
+    if (title === undefined || injectedToolsByName.size === 0) {
+      return undefined;
+    }
+    for (const tool of injectedToolsByName.values()) {
+      if (title.includes(tool.name)) {
+        return tool;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Bind a freshly announced tool_call to a bb tool: the one its title names,
+   * else the oldest proxied call still waiting for its announcement.
+   */
+  function bindAnnouncedCall(
+    context: AcpDeltaTranslationContext | undefined,
+    event: AcpToolCallUpdateEvent,
+  ): AcpInjectedTool | undefined {
+    if (!isInjectedToolCandidate(event)) {
+      return undefined;
+    }
+    const named = injectedToolNamedBy(event);
+    if (named !== undefined) {
+      return named;
+    }
+    return pendingInjectedCalls.get(context?.threadId ?? "")?.shift();
+  }
+
+  /**
+   * The MCP proxy forwarded a call to bb tool `tool` for this thread. ACP
+   * gives the bridge no id that links the proxied call to the agent's own
+   * tool_call (Cursor announces every MCP call as "MCP: tool", kind `other`),
+   * so the binding is positional: the unbound candidate whose title names the
+   * tool, else the unbound candidate that mentions MCP, else the oldest
+   * unbound candidate — agents announce parallel calls in the order they run
+   * them. With no candidate open, the call waits for the next announcement.
+   */
+  function noteInjectedToolCall(threadId: string, toolName: string): void {
+    const tool = injectedToolsByName.get(toolName) ?? { name: toolName };
+    const candidates = threadCallEntries({ threadId }).filter(
+      ([key, event]) =>
+        !injectedToolBindings.has(key) && isInjectedToolCandidate(event),
+    );
+    const chosen =
+      candidates.find(([, event]) => event.title?.includes(tool.name)) ??
+      candidates.find(([, event]) => /\bmcp\b/i.test(event.title ?? "")) ??
+      candidates[0];
+    if (chosen !== undefined) {
+      injectedToolBindings.set(chosen[0], tool);
+      return;
+    }
+    const queue = pendingInjectedCalls.get(threadId) ?? [];
+    queue.push(tool);
+    pendingInjectedCalls.set(threadId, queue);
+  }
+
+  /** Classify a call with its bb-tool binding, if it has one. */
+  function classifyCall(
+    context: AcpDeltaTranslationContext | undefined,
+    event: AcpToolCallUpdateEvent,
+  ): AcpClassifiedToolCall {
+    return classifyAcpToolCall(
+      event,
+      injectedToolBindings.get(callKey(context, event.toolCallId)),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -326,17 +374,17 @@ export function createAcpDeltaTranslator() {
 
   function closeThoughtStream(): ThreadDelta {
     return {
-      kind: "message.close",
-      channel: "reasoning",
-      streamKey: THOUGHT_STREAM_KEY,
+      kind: "item.textClose",
+      key: { channel: THOUGHT_STREAM_KEY },
+      channel: "reasoningText",
     };
   }
 
   function closeAssistantStream(): ThreadDelta {
     return {
-      kind: "message.close",
-      channel: "assistant",
-      streamKey: ASSISTANT_STREAM_KEY,
+      kind: "item.textClose",
+      key: { channel: ASSISTANT_STREAM_KEY },
+      channel: "agentMessage",
     };
   }
 
@@ -345,6 +393,7 @@ export function createAcpDeltaTranslator() {
   // -------------------------------------------------------------------------
 
   interface AcpCloseArgs {
+    context: AcpDeltaTranslationContext | undefined;
     event: AcpToolCallUpdateEvent;
     status: ThreadEventItemStatus;
     noTurnFallback?: DeltaNoTurnFallback;
@@ -358,7 +407,9 @@ export function createAcpDeltaTranslator() {
    */
   function toolCallClose(args: AcpCloseArgs): ThreadDelta {
     const outputText = extractAcpToolCallOutputText(args.event);
-    const terminal = args.status === "completed" || args.status === "failed";
+    const exitCode = extractAcpExitCode(args.event, args.status);
+    const classified = classifyCall(args.context, args.event);
+    injectedToolBindings.delete(callKey(args.context, args.event.toolCallId));
     return {
       kind: "item.close",
       key: {
@@ -368,8 +419,9 @@ export function createAcpDeltaTranslator() {
       ...(outputText === undefined
         ? {}
         : { resultText: outputText, aggregatedOutput: outputText }),
-      ...(terminal ? { exitCode: args.status === "failed" ? 1 : 0 } : {}),
-      item: classifyAcpToolCall(args.event),
+      ...(exitCode === undefined ? {} : { exitCode }),
+      item: classified.item,
+      presentation: classified.presentation,
       ...(args.noTurnFallback ? { noTurnFallback: args.noTurnFallback } : {}),
     };
   }
@@ -384,6 +436,7 @@ export function createAcpDeltaTranslator() {
       mergedToolCalls.delete(key);
       deltas.push(
         toolCallClose({
+          context,
           event,
           status,
         }),
@@ -427,9 +480,9 @@ export function createAcpDeltaTranslator() {
         return [
           closeThoughtStream(),
           {
-            kind: "message.delta",
-            channel: "assistant",
-            streamKey: ASSISTANT_STREAM_KEY,
+            kind: "item.textDelta",
+            key: { channel: ASSISTANT_STREAM_KEY },
+            channel: "agentMessage",
             text,
             noTurnFallback: noTurnFallbackFor(rawEvent),
           },
@@ -446,9 +499,9 @@ export function createAcpDeltaTranslator() {
         }
         return [
           {
-            kind: "message.delta",
-            channel: "reasoning",
-            streamKey: THOUGHT_STREAM_KEY,
+            kind: "item.textDelta",
+            key: { channel: THOUGHT_STREAM_KEY },
+            channel: "reasoningText",
             text,
             noTurnFallback: noTurnFallbackFor(rawEvent),
           },
@@ -462,21 +515,25 @@ export function createAcpDeltaTranslator() {
         }
         // A tool call flushes both open streams before its item.
         const flush = [closeThoughtStream(), closeAssistantStream()];
+        const announcedKey = callKey(context, parsed.data.toolCallId);
+        const bound = bindAnnouncedCall(context, parsed.data);
+        if (bound !== undefined) {
+          injectedToolBindings.set(announcedKey, bound);
+        }
         if (isTerminalAcpStatus(parsed.data.status)) {
           // Arrived already settled: close-without-open, no cache entry.
           return [
             ...flush,
             toolCallClose({
+              context,
               event: parsed.data,
               status: mapAcpToolCallStatus(parsed.data.status),
               noTurnFallback: noTurnFallbackFor(rawEvent),
             }),
           ];
         }
-        mergedToolCalls.set(
-          callKey(context, parsed.data.toolCallId),
-          parsed.data,
-        );
+        mergedToolCalls.set(announcedKey, parsed.data);
+        const classified = classifyCall(context, parsed.data);
         return [
           ...flush,
           {
@@ -484,7 +541,8 @@ export function createAcpDeltaTranslator() {
             key: {
               providerItemId: parsed.data.toolCallId,
             },
-            item: classifyAcpToolCall(parsed.data),
+            item: classified.item,
+            presentation: classified.presentation,
             noTurnFallback: noTurnFallbackFor(rawEvent),
           },
         ];
@@ -504,6 +562,7 @@ export function createAcpDeltaTranslator() {
           mergedToolCalls.delete(key);
           return [
             toolCallClose({
+              context,
               event: merged,
               status: mapAcpToolCallStatus(merged.status),
               noTurnFallback: noTurnFallbackFor(rawEvent),
@@ -512,7 +571,14 @@ export function createAcpDeltaTranslator() {
         }
         mergedToolCalls.set(key, merged);
         const progressText = extractAcpToolCallOutputText(parsed.data);
-        if (progressText && classifyAcpToolCall(merged).type === "tool") {
+        // Commands and file changes settle with their output at the close;
+        // every other item streams its progress text.
+        const progressItemType = classifyCall(context, merged).item.type;
+        if (
+          progressText &&
+          progressItemType !== "command" &&
+          progressItemType !== "fileChange"
+        ) {
           return [
             {
               kind: "item.progress",
@@ -532,6 +598,9 @@ export function createAcpDeltaTranslator() {
         if (!parsed.success) {
           return suppressedUnhandled(rawEvent);
         }
+        // An ACP plan update carries the whole entry list, so each one is a
+        // settled `planSteps` snapshot (grammar v3): a channel-keyed close
+        // mints a fresh item per snapshot and the latest supersedes the rest.
         const steps: ThreadEventPlanStep[] = parsed.data.entries.map(
           (entry) => ({
             step: entry.content,
@@ -542,8 +611,11 @@ export function createAcpDeltaTranslator() {
         );
         return [
           {
-            kind: "turn.plan",
-            steps,
+            kind: "item.close",
+            key: { channel: PLAN_STEPS_CHANNEL },
+            status: "completed",
+            item: { type: "planSteps", steps },
+            presentation: planStepsPresentation(steps),
             noTurnFallback: noTurnFallbackFor(rawEvent),
           },
         ];
@@ -675,6 +747,7 @@ export function createAcpDeltaTranslator() {
             kind: "item.open",
             key: { channel: "compaction" },
             item: { type: "compaction" },
+            presentation: COMPACTION_PRESENTATION,
           },
         ];
       }
@@ -744,6 +817,10 @@ export function createAcpDeltaTranslator() {
                 },
               ],
             },
+            presentation: fileChangePresentation({
+              verb: params.data.kind,
+              paths: [params.data.path],
+            }),
             noTurnFallback: noTurnFallbackFor(rawEvent),
           },
         ];
@@ -788,7 +865,21 @@ export function createAcpDeltaTranslator() {
     return mergedToolCalls.get(callKey({ threadId }, toolCallId));
   }
 
-  return { getMergedToolCall, translateAcpEvent };
+  /** The bb tool an unsettled call is bound to (Q31), for its permission. */
+  function getInjectedToolBinding(
+    threadId: string,
+    toolCallId: string,
+  ): AcpInjectedTool | undefined {
+    return injectedToolBindings.get(callKey({ threadId }, toolCallId));
+  }
+
+  return {
+    configureInjectedTools,
+    getInjectedToolBinding,
+    getMergedToolCall,
+    noteInjectedToolCall,
+    translateAcpEvent,
+  };
 }
 
 export type AcpDeltaTranslator = ReturnType<typeof createAcpDeltaTranslator>;

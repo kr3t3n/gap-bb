@@ -41,9 +41,12 @@ cannot resolve them. Everything a bridge compiles against is published at
 **`@get-bb/plugin-sdk/provider-bridge`**: the protocol schemas (including
 the `thread/delta` grammar), the bridge kit (JSON-RPC plumbing, tool-call
 and interaction codecs, visibility, dialect-parsing helpers), and the domain
-vocabulary the params reference. In-repo, those are implemented by
-`@bb/provider-bridge-protocol` and `@bb/domain`; test infrastructure stays
-private in `@bb/provider-bridge-protocol/testing`.
+vocabulary the params reference, and the testing kit a bridge proves itself
+with — the conformance scenarios, the real delta assembler, the JSON-RPC
+harness and the calibration normalizer — is published beside it as
+**`@get-bb/plugin-sdk/provider-bridge/testing`**. In-repo, those are
+implemented by `@bb/provider-bridge-protocol` (the grammar, the
+`assembler`, `conformance` and `testing` subpaths) and `@bb/domain`.
 
 ## Transport
 
@@ -75,8 +78,19 @@ the daemon — that decoupling is the protocol's reason to exist.
 
 Handshake capabilities are **session-behavior facts** (`sessionRestore`,
 `threadArchive`, `threadRename`, `threadGoalClear`, `fork`,
-`approvalEnforcedBy`). They are reported by the code that implements
-them, so they cannot drift from behavior. The runtime never sends a
+`approvalEnforcedBy`, `grammarVersions`, `steerMode`). They are reported by
+the code that implements them, so they cannot drift from behavior.
+`grammarVersions` is the inclusive `[min, max]` range of the `thread/delta`
+grammar the bridge speaks (default `[2, 2]`: a bridge that says nothing
+speaks the grammar that shipped with the protocol version it negotiated),
+which is how the vocabulary can change without a protocol bump. The runtime
+states its assembler's range in the `initialize` params and both sides use
+the highest common version; today the assembler speaks **v3 only**
+(`[3, 3]`), so every bridge reports `[3, 3]` and a bridge whose range
+misses 3 — including one that predates the field — is refused at spawn with
+a legible error. `steerMode` says whether `turn/steer` is
+injected into the live model loop (`inject`) or held for the next prompt
+boundary (`queue`, the default and the conservative reading). The runtime never sends a
 capability-gated method to a bridge that did not advertise it. A handshake
 fact may only _narrow_ what the provider's declaration advertises (a
 declared fork affordance can turn out unavailable for this agent), never
@@ -85,7 +99,7 @@ widen it.
 The sessionless `provider/health`, `provider/usage`,
 `provider/installation/status`, and `provider/installation/run` methods are
 different: their support is declared by each provider through
-`bb.agents.experimental_registerProvider`, so the server can skip an
+`bb.providers.register`, so the server can skip an
 unsupported host probe and clients can omit providers that never expose usage
 or installation management before a bridge has started. A shared bridge may
 declare health or usage for every provider it owns and still return
@@ -123,8 +137,8 @@ only then does it earn a handshake capability.
 Everything timeline-bound rides one notification: `thread/delta
 { threadId, deltas }`. A delta is a parsed _semantic_ unit — `turn.open`,
 `turn.boundary`, `input.accepted`, `item.open`/`item.close` with a full item
-shape, streamed text (`message.delta`, `item.textDelta`), usage,
-context-window, errors/warnings, `unhandled` diagnostics, session lifecycle
+shape, streamed text (`item.textDelta`/`item.textClose`), `usage`,
+`contextWindow`, errors/warnings, `unhandled` diagnostics, session lifecycle
 (`session.reset`, `session.ended`) — never a raw provider event and never a
 finished `ThreadEvent`. The schemas in
 `@bb/provider-bridge-protocol/src/thread-delta.ts` are the source of truth
@@ -151,7 +165,29 @@ adapter) consumes the deltas and owns every timeline invariant:
   close-without-open); repeated closes for a settled provider-identified
   key are deduped and an explicit reopen reuses the same bb id.
 - **Accumulation.** Streamed text, cumulative output snapshots (diffed into
-  deltas/resets), token usage totals, and progress-event throttling.
+  deltas/resets), and progress-event throttling.
+- **One streaming dialect.** Every text stream is an item keyed like every
+  other item: by the provider's own item id when it names its message items
+  (codex), or by a bridge-chosen `key.channel` (`assistant`, `thinking-2`)
+  plus `key.parentRef` for anonymous streams (claude, pi, acp).
+  `item.textDelta { key, channel: agentMessage | reasoningText |
+reasoningSummary | plan, text }` synthesizes the channel's `item/started`
+  on first sight and accumulates; `item.textClose { key, channel, text? }`
+  settles with the provider-final `text` or, absent that, the accumulated
+  stream (a whitespace-only stream completes nothing), and releases the
+  key. A tool `item.open` releases the anonymous assistant stream in its
+  scope so later text mints a fresh item; provider-named items keep their
+  own lifecycle and may settle through `item.close` with the full terminal
+  shape like any item. `session.ended` settles a streamed item with the
+  text it received.
+- **One usage dialect.** `usage { total, last, modelContextWindow }` is
+  forwarded verbatim as `thread/tokenUsage/updated`: a provider with exact
+  cumulative totals (codex) sends both as reported, and a provider that
+  reports per turn (claude, pi) sums `last` into `total` itself
+  (`addTokenUsage` in the bridge kit), resetting where it sends
+  `session.reset`. The context meter is always the separate `contextWindow`
+  delta, which may name a vouched `providerTurnId` (codex sends one beside
+  each `usage`).
 - **Streamed-text batching.** Coalescing is assembler policy, not bridge
   policy: within a per-stream flush window (`textDeltaFlushMs`, 100ms
   default, 0 disables) consecutive streamed-text events — assistant/
@@ -169,6 +205,71 @@ adapter) consumes the deltas and owns every timeline invariant:
   thread's state.
 - **Settlement.** `session.ended` and settling errors close open turns and
   items with the right statuses.
+
+### Grammar v3
+
+The target provider-plugin surface ([provider-plugin-api.md](provider-plugin-api.md))
+grew the delta vocabulary into grammar v3: new union members and optional
+fields beside the v2 grammar, plus one streaming dialect and one usage
+dialect replacing v2's two of each (`message.delta`/`message.close` and
+`usage.turn`/`usage.exact` are deleted). The protocol version stays at 2 —
+the envelope and the method vocabulary did not change — and the grammar
+range is what gates a bridge: every bridge in this repo reports
+`grammarVersions: [3, 3]`.
+
+- **Core item shapes** `fileRead`, `search` (`mode: content | path | list`),
+  `delegation` (`childRef`, `label`, `background`, `summary?`; one shape for
+  codex `spawnAgent`/`wait`, the Claude `Agent` tool, and backgrounded
+  agents, which replaced `thread/openWork`), and `planSteps` (a structured plan
+  snapshot as an item, which replaced the turn-level `turn.plan` delta once
+  the ACP bridge — its last speaker — migrated).
+- **`presentation`** on `item.open` and `item.close`, the one place it
+  travels: `label {pending, completed}`, `icon {glyph}` (host glyphs only —
+  a plugin-relative asset path cannot outlive the plugin, and a durable
+  content-addressed form is later work), `title?`, `detail?` (≤ 280 chars),
+  `suppress?`, `tint?`. The assembler persists it on the canonical item (the
+  close's value wins, the open's survives when the close carries none), so
+  the row renders after the plugin is gone and mobile renders every kind
+  without plugin code. Optional for core shapes until the v2 paths are
+  deleted; required when the shape is `extension`.
+- **bb-injected tools carry their presentation.** Every `dynamicTools[]`
+  definition on `thread/start`, `thread/resume` and `thread/fork` carries the
+  `presentation` the server resolved for it (from the owning plugin's
+  `experimental_presentation`, its status labels, or a generic label and the
+  plugin's glyph). A bridge stamps that presentation, beside `server: "bb"`,
+  on the `item.open`/`item.close` of every call to the tool, so no tool-name
+  table labels bb tools anywhere downstream. Optional on the wire while the
+  grammar migrates (a definition recorded before the field existed presents
+  generically); the stabilization pass makes it required.
+- **Extension kinds** `"<pluginId>/<name>"`: the `extension` item shape
+  (opaque JSON `payload`; its lifecycle delta must carry a `presentation`)
+  and the thread-scoped
+  `extension.state` delta (latest snapshot wins per kind). Only the namespace
+  is validated on the wire; the server validates payloads against the
+  plugin's declared schemas at ingest.
+- **`provider/recovery`** is a bridge → runtime _notification_ beside
+  `session/replaced`, not a delta: `{ threadId?, kind: sessionArchived |
+authRequired | restartRecommended | staleTurn | rateLimited, message,
+retryable }`. The runtime acts on the kind and never matches error text.
+  Today the bridge adapter decodes it and the runtime forwards it to its
+  `onProviderRecovery` hook (the daemon logs it); the per-kind actions land
+  with the runtime cleanup workstream.
+
+The assembler builds every v3 core kind: `fileRead`, `search` and
+`planSteps` open pending and settle from the terminal shape like `command`;
+a foreground `delegation` settles through the turn-scoped `item/completed`,
+and a `background: true` delegation is thread-attached like a background
+task — its `item.progress` snapshots and its `item.close` ride the
+thread-scoped `item/delegation/progress` and `item/delegation/completed`
+events, need no open turn, and survive turn settlement and `session.ended`.
+The assembler reports `grammarVersions: [2, 3]`. An `extension` shape
+becomes the canonical `extension` item (opaque payload, the delta's
+presentation); `extension.state` becomes the thread-scoped
+`thread/extensionState/updated` event. The server validates both payloads
+against the owning plugin's declared `experimental_extensionKinds` schema at
+ingest (64 KiB cap); an undeclared kind or a schema miss is persisted as a
+`provider/unhandled` in the same batch slot, never dropped and never stored
+unvalidated.
 
 ## Identifiers
 
@@ -238,8 +339,8 @@ it:
 Assembler-owned invariants over the assembled timeline:
 
 1. **Every item's first event is `item/started`.** The assembler synthesizes
-   the opening event for delta-first text streams (`message.delta`,
-   `item.textDelta`), so a bridge streams without bookkeeping. Output
+   the opening event for delta-first text streams (`item.textDelta`), so a
+   bridge streams without bookkeeping. Output
    deltas (`item.outputDelta`) never synthesize — a command item without
    its command would be worse than the anomaly — but still register the key
    so a later open correlates.
@@ -288,18 +389,18 @@ carries the whole item, so refusing it would lose real content.
    of a session and apply at the next construction.
 4. Fork: absent `sourceProviderCheckpointId` means fork at the tip. A
    `fork: "tip"` bridge rejects checkpoint forks with
-   `FORK_CHECKPOINT_UNSUPPORTED` rather than cloning history the bb timeline
-   does not show.
-5. `thread/openWork` reports whether a thread still owns provider work that
-   outlives its turn and that bb cannot see. Work reported as
-   `backgroundTask` items is already tracked by the runtime; this is for
-   work the provider models as something else (codex reports native
-   subagents as tool calls). It is level-triggered — send the current value,
-   the runtime keeps the last one heard — and a bridge that never sends it
-   reads as no open work. Retract it (`open: false`) when the session is
-   released, or the runtime will refuse to reap a thread that no longer
-   exists on your side. Missing this is how an idle-looking thread gets its
-   parent process stopped out from under a running child agent.
+   `FORK_CHECKPOINT_UNSUPPORTED`; the server only asks such a bridge for a
+   tip fork. The forked bb thread inherits the source timeline through the
+   same point the clone ends on, so the checkpoint must be the one the
+   bridge reported on that turn's `turn/completed`.
+5. Open work is what the timeline says it is. A `backgroundTask` item and a
+   `delegation` item that are still pending are live provider work, and the
+   runtime will not reap the session while one is open. Model a native
+   sub-agent as a `delegation` (codex does), re-open it when the agent works
+   again, and settle it — as failed — when your provider child dies, or the
+   runtime keeps refusing to reap a thread that no longer exists on your
+   side. There is no side channel for this (the former `thread/openWork`
+   notification is gone; a runtime ignores it).
 
 ## Ordering guarantees
 
@@ -340,3 +441,73 @@ never let a descendant holding an inherited pipe inject into a fresh
 session. The bridge's own environment is constructed by the runtime from an
 allowlist; bridges construct their children's environments the same way and
 must not leak their own inherited env downward (#1366, #1545).
+
+## Record mode
+
+Set `BB_PROVIDER_BRIDGE_RECORD_DIR` to a directory and every bridge process
+tees the lines that cross its two boundaries into NDJSON files. The bootstrap
+(`bridge-worker-entry.ts`) records the runtime wire for every bridge, first-
+or third-party. A bridge that spawns its provider child records the provider
+wire by calling `experimental_recordProviderChildIo(child, { threadId })`
+right after `spawn()`; the call is a no-op when record mode is off. A bridge
+whose provider pipe belongs to an SDK checks
+`experimental_isProviderBridgeRecording()` and takes the spawn over (the
+Claude bridge does this through the Agent SDK's `spawnClaudeCodeProcess`
+seam). Pi runs in-process and records its SDK event boundary instead.
+
+Layout: `<dir>/<threadId>/<direction>.ndjson`, with `_process` for lines that
+belong to no thread (`initialize`, `model/list`, provider health, and the
+children those spawn). The four directions are `runtime→bridge`,
+`bridge→runtime`, `provider→bridge`, and `bridge→provider`. One entry per
+line: `{ "ts", "run", "seq", "dir", "line" }`. `seq` is one counter across
+every lane of the process and `run` identifies the process, so the files of a
+thread merge back into their exact order even across a bridge restart.
+Responses, which carry only an id, land in the scope of the request they
+answer. Nothing buffers: each line is appended as it crosses.
+
+The daemon forwards the variable to the bridges it spawns and the runtime
+appends the provider id, so a daemon started with it writes
+`<dir>/<providerId>/<threadId>/…`. `withoutBridgeRuntimeEnv` and the
+`BB_*` allowlist both strip the variable from provider children, so a
+recorded provider never records itself.
+
+Recordings are the input of the parity harness
+(`packages/provider-bridge-protocol/src/testing/parity.ts`): the provider
+lanes replay into a fake child (`replay-provider-child.mjs`, for which the
+recording is the script), the runtime lanes replay into a bridge, and two
+checkouts are diffed on the assembled events and projected rows with
+`pnpm parity --old <checkout> --new .` (`@bb/provider-parity`). Each leg
+assembles and projects with its own checkout's code. Differences a migration
+PR intends go in `recordings/parity-allowlist.json` with the PR and reason;
+an entry that masks nothing is reported stale and fails the run.
+
+Redacted recordings live under `packages/provider-bridge-protocol/recordings`,
+one `<provider>/<cell>` directory per live-QA matrix cell with a
+`manifest.json` (provider, cell, CLI version, date, what the session did);
+`scripts/provider-recordings/redact.mjs` and `package-cells.mjs` produce
+them. `recordings/row-counts.json` pins each cell's event, row,
+`provider/unhandled`, and grammar-drop counts; `parity.self.test.ts` checks
+the pins and replays every cell through the current bridge on each commit,
+and `UPDATE_PARITY_ROW_COUNTS=1` rewrites the pins deliberately. Raw
+recordings stay out of git.
+
+A recording is never rewritten. When a bridge change alters what the bridge
+emits for a recording, `pnpm --filter @bb/provider-parity rerecord
+[--plan-with <recording-time checkout>]` writes the bridge's current output
+to `bridge→runtime.current.ndjson` beside the recorded lane; the self-suite
+pins and compares against that file when it exists, while `pnpm parity`
+still paces a pre-migration leg from the recorded lane (and the current leg
+from the current one). `pnpm parity --dump-dir <dir>` writes both legs'
+normalized event and row lists per cell, for allowlist entries that must
+name a list index. Re-recorded lanes pass through `redact.mjs` before they
+are written. The committed current lanes are the v3 bridges' output for the
+v2 recordings: the stack's assembler reads only v3, so every replayable cell
+carries one, and they assemble to the same pinned counts as the recordings.
+
+The conformance kit runs the same recordings as its recorded-traffic
+scenario set: `replayRecordedCells` replays a bridge's cells and
+`checkRecordedCellReplay` reports `recorded/<cell>/{replays,
+events-schema-valid, grammar, turn-lifecycle, not-empty}` per cell. Each
+first-party bridge has a `bridge.recorded-conformance.test.ts` beside its
+scripted suite, so conformance reflects the real dialect as well as the
+protocol.

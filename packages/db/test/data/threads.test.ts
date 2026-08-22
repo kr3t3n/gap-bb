@@ -1302,7 +1302,7 @@ describe("threads", () => {
     });
 
     const stopping = requireThreadLifecycleEventApplied(
-      applyThreadLifecycleEvent(db, noopNotifier, {
+      applyThreadLifecycleEvent(db, {
         event: { type: "stop.requested" },
         threadId: thread.id,
       }),
@@ -1311,7 +1311,7 @@ describe("threads", () => {
     expect(getThread(db, thread.id)?.status).toBe("stopping");
 
     const settled = requireThreadLifecycleEventApplied(
-      applyThreadLifecycleEvent(db, noopNotifier, {
+      applyThreadLifecycleEvent(db, {
         event: { type: "stop.settled" },
         threadId: thread.id,
       }),
@@ -1442,7 +1442,7 @@ describe("threads", () => {
       providerId: "codex",
     });
     requireThreadLifecycleEventApplied(
-      applyThreadLifecycleEvent(db, noopNotifier, {
+      applyThreadLifecycleEvent(db, {
         event: { type: "stop.requested" },
         threadId: stoppingThread.id,
       }),
@@ -1532,7 +1532,7 @@ describe("thread lifecycle transitions and read state", () => {
 
       vi.setSystemTime(2_000);
       const idleThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, noopNotifier, {
+        applyThreadLifecycleEvent(db, {
           event: { type: "run.succeeded" },
           threadId: activeThread.id,
         }),
@@ -1547,7 +1547,7 @@ describe("thread lifecycle transitions and read state", () => {
       });
       vi.setSystemTime(3_000);
       const activeAgainThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, noopNotifier, {
+        applyThreadLifecycleEvent(db, {
           event: { type: "run.started" },
           threadId: activeThread.id,
         }),
@@ -1582,7 +1582,7 @@ describe("thread lifecycle transitions and read state", () => {
 
       vi.setSystemTime(2_000);
       const idleThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, noopNotifier, {
+        applyThreadLifecycleEvent(db, {
           event: { type: "run.succeeded" },
           threadId: childThread.id,
         }),
@@ -1613,7 +1613,7 @@ describe("thread lifecycle transitions and read state", () => {
 
       vi.setSystemTime(2_000);
       const erroredThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, noopNotifier, {
+        applyThreadLifecycleEvent(db, {
           event: { type: "run.failed" },
           threadId: stoppingThread.id,
         }),

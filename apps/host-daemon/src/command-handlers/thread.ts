@@ -22,6 +22,14 @@ type ExistingThreadRuntimeCommand =
   | TurnSubmitCommand
   | CommandOf<"thread.goal.clear">;
 
+// The server marks a thread active before the provider's turn/started reaches
+// it. An auto/steer submit created in that gap carries no expected turn id even
+// though the preceding command is already opening one. The daemon serializes
+// turn submissions, so give the runtime-owned turn state a bounded chance to
+// catch up. If it is still pending after that bound, fail closed rather than
+// launch a competing turn.
+const TURN_SUBMIT_ACTIVE_TURN_WAIT_MS = 5_000;
+
 interface ResumeThreadRuntimeIfMissingArgs {
   command: ExistingThreadRuntimeCommand;
   entry: RuntimeEntry;
@@ -392,6 +400,57 @@ async function steerSubmittedTurn(
   );
 }
 
+async function resolveSubmittedTurnTarget(
+  command: TurnSubmitCommand,
+  entry: RuntimeEntry,
+): Promise<string | null> {
+  if (command.target.mode === "start") {
+    return null;
+  }
+  // Explicit steer preserves its vouched target. Auto mode intentionally
+  // rebases onto the daemon's live turn when the server snapshot is stale.
+  if (
+    command.target.mode === "steer" &&
+    command.target.expectedTurnId !== null
+  ) {
+    return command.target.expectedTurnId;
+  }
+  const activeTurnId = entry.runtime.getActiveTurnId(command.threadId);
+  if (activeTurnId !== null) {
+    return activeTurnId;
+  }
+  if (command.target.expectedTurnId !== null) {
+    return command.target.expectedTurnId;
+  }
+  // With no active id, a live thread means the runtime has accepted a start
+  // whose turn/started event is still pending. If that prior turn already
+  // completed, it is no longer live and this input can start immediately.
+  if (!entry.runtime.getLiveThreadIds().includes(command.threadId)) {
+    return null;
+  }
+  const awaitedTurnId = await entry.runtime.waitForActiveTurn(
+    command.threadId,
+    {
+      timeoutMs: TURN_SUBMIT_ACTIVE_TURN_WAIT_MS,
+    },
+  );
+  if (awaitedTurnId !== null) {
+    return awaitedTurnId;
+  }
+  // The timeout and provider event can race. Re-read both facts before
+  // deciding whether the previous start completed or remains unresolved.
+  const refreshedTurnId = entry.runtime.getActiveTurnId(command.threadId);
+  if (refreshedTurnId !== null) {
+    return refreshedTurnId;
+  }
+  if (entry.runtime.getLiveThreadIds().includes(command.threadId)) {
+    throw new Error(
+      `Refusing to start a competing turn while ${command.threadId} is still starting`,
+    );
+  }
+  return null;
+}
+
 export async function submitTurn(
   command: TurnSubmitCommand,
   entry: RuntimeEntry,
@@ -416,27 +475,23 @@ export async function submitTurn(
       entry,
       options,
     });
+    const resolvedTurnId = await resolveSubmittedTurnTarget(
+      stagedCommand,
+      entry,
+    );
     switch (command.target.mode) {
       case "start":
         return await runSubmittedTurn(stagedCommand, entry);
       case "auto":
-        return command.target.expectedTurnId
-          ? await steerSubmittedTurn(
-              stagedCommand,
-              entry,
-              command.target.expectedTurnId,
-            )
+        return resolvedTurnId
+          ? await steerSubmittedTurn(stagedCommand, entry, resolvedTurnId)
           : await runSubmittedTurn(stagedCommand, entry);
       case "steer":
-        if (!command.target.expectedTurnId) {
+        if (!resolvedTurnId) {
           // The server saw no active turn, but the user's intent is still "send".
           return await runSubmittedTurn(stagedCommand, entry);
         }
-        return await steerSubmittedTurn(
-          stagedCommand,
-          entry,
-          command.target.expectedTurnId,
-        );
+        return await steerSubmittedTurn(stagedCommand, entry, resolvedTurnId);
     }
   } catch (error) {
     await cleanupAfterPostStagingFailure(staged.cleanup);

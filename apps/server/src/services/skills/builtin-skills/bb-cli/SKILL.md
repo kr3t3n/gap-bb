@@ -89,10 +89,9 @@ message agents, or inspect projects, providers, and environments.
 - The `steerActiveThreadOnEnter` General preference defaults to false. Outside
   an open composer typeahead menu, enable it to make Enter steer a running
   thread and Command+Enter queue a follow-up; when disabled, those actions are
-  reversed. Shift+Enter inserts a newline, while zen mode also makes
-  unmodified Enter insert one. On coarse-pointer touch devices, the software
-  keyboard keeps Return as a newline; iPadOS WebKit preserves the Enter
-  shortcuts for a connected Magic Keyboard. Update the preference with
+  reversed. Shift+Enter inserts a newline. On coarse-pointer touch devices,
+  the software keyboard keeps Return as a newline; iPadOS WebKit preserves the
+  Enter shortcuts for a connected Magic Keyboard. Update the preference with
   `bb settings general steerActiveThreadOnEnter <true|false>`.
 - The `streamerMode` General preference defaults to false. Enable it to hide
   every `customModels` entry from `~/.bb/config.json` in all model lists
@@ -193,10 +192,12 @@ message agents, or inspect projects, providers, and environments.
   flags pass host-readable absolute paths (or relative server-upload tokens)
   through to the runtime; they do not read files on the CLI machine.
 - Spawn creates a root thread unless you pass `--parent-thread`.
-- Use `bb thread fork <source-thread-id>` to clone a provider session. It
-  creates an idle fork by default; add `--prompt`, select `--workspace
-isolated|reuse`, or anchor with `--source-seq-end`. Permission mode inherits
-  the source thread unless explicitly overridden.
+- Use `bb thread fork <source-thread-id>` to clone a provider session. The
+  fork inherits the source conversation in its timeline. It creates an idle
+  fork by default; add `--prompt`, select `--workspace isolated|reuse`, or
+  anchor with `--source-seq-end` on a completed source turn (the clone and the
+  inherited timeline both end with the turn containing that sequence).
+  Permission mode inherits the source thread unless explicitly overridden.
 - Pass `--visibility hidden` for background/plugin workers that should remain
   out of sidebar organization without contributing unread/pending favicon
   attention. `bb thread list` excludes them by
@@ -302,7 +303,8 @@ status|install` to inspect or install provider CLIs on a selected machine.
   returning the stable server attachment DTO. Optional `--filename` and
   `--mime-type` override inferred metadata. Pass the returned relative `path`
   to thread `--file` or `--image`; image MIME types are capped at 10MB and
-  other files at 25MB. `bb project attachment download <project-id>
+  other files at 25MB, and image/heic or image/heif uploads are rejected
+  (convert them to JPEG or PNG first). `bb project attachment download <project-id>
 <attachment-path> --client-file <path>` writes existing attachment bytes on
   the CLI machine. There is no project-attachment list or per-file remove API.
 - `bb project history|reorder` exposes project prompt recall and sidebar order.
@@ -384,6 +386,13 @@ or artifacts, validation performed, and blockers.
 <seconds>` when you need a shorter or longer budget.
 - Use `bb thread tell <thread-id> "..."` when requirements change, a blocker
   needs clarification, or follow-up work is needed.
+- Add `--plan` to `bb thread spawn` or `bb thread tell` to send the prompt as
+  the provider's structured `/plan` action: the agent proposes a plan for
+  approval before executing (Claude Code and Codex). Plain `/plan ...` text is
+  not recognized and reaches the provider as literal text. Review the proposed
+  plan with `bb thread interactions`; `bb thread cancel-plan` leaves Plan mode
+  early. The SDK equivalent is `input: [createBuiltinPlanCommandTextInput(text)]`
+  (exported by `@bb/sdk`) on `threads.spawn` / `threads.send`.
 - Use `bb thread edit-message <thread-id> --message "..."` to replace and rerun
   the latest eligible user message in a Codex, Claude Code, or Pi thread. Pass
   `--expected-request-sequence <sequence>` to select an earlier message. Failed
@@ -409,7 +418,13 @@ or artifacts, validation performed, and blockers.
 - Use `bb thread show <thread-id>` for status, parent, environment, pull request
   status, and result.
 - Use `bb thread show <thread-id> --git-diff` to review file changes.
-- Use `bb thread log <thread-id>` to inspect the conversation.
+- Use `bb thread log <thread-id>` to inspect the conversation. The default
+  shows only the newest 20 user-message turns and ends with a notice when older
+  history was omitted; `--limit <n>` (max 100) widens the window and `--all`
+  prints the whole thread. `--json` prints the oldest 100 raw events and warns
+  on stderr when more exist; page with `--after-seq <seq>` or pass `--all`.
+  Grep the `--all` output, not the default page, when checking whether a
+  thread ever received a message.
 - Use `bb thread output <thread-id>` to read the latest final output, or
   `bb thread output --self` for the current thread.
 
@@ -527,7 +542,10 @@ For review or fix pipelines, get the environment ID from
 add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   = that comment). Avoid progress spam.
 - Delegated threads are attached automatically. For work started independently,
-  run `bb tasks attach <key-or-id>` from the working thread.
+  run `bb tasks attach <key-or-id>` from the working thread. When a thread is
+  done with a task or a respawned worker replaced it, run `bb tasks detach
+<key-or-id> [--thread <thread-id>]`. `bb tasks threads <key>` lists live
+  threads first, newest first.
 - When implementation is ready for review, run `bb tasks update <key-or-id>
 --status in_review`; if blocked, leave the status accurate and explain the
   blocker in a comment.
@@ -577,7 +595,7 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
 - Script automations may be disabled by the plugin setting; fall back to an
   `agent` automation if script creation is rejected.
 - Create an agent automation with
-  `bb automation create --project <id> --name "..." --cron "0 9 * * 1-5" --timezone "America/New_York" --provider <id> --model <model> --prompt "..."`.
+  `bb automation create --project <id> --name "..." --cron "0 9 * * 1-5" --timezone "America/New_York" --provider <id> --model <model> --reasoning <level> --service-tier <default|fast> --prompt "..."`.
 - Create a one-shot agent automation with
   `bb automation create --project <id> --name "..." --in "30m" --provider <id> --model <model> --prompt "..."`,
   or use `--at "2026-07-03T09:00:00-07:00"` for an absolute run time.
@@ -609,20 +627,24 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
 - Use `bb automation list`, `bb automation show <id>`, and
   `bb automation runs <id>` to inspect; `--output <run-id>` prints a script
   run's captured stdout.
-- Partially update an existing agent automation in place by omitting
-  `--provider` and `--model` and using `bb automation update <id> --project <id>
---prompt "..."`, `--permission-mode accept-edits|auto|full`, or exactly one
+- Partially update an existing agent automation in place with any of
+  `--prompt`, `--provider`, `--model`, `--reasoning`,
+  `--service-tier default|fast|none`, `--permission-mode accept-edits|auto|full`,
+  or exactly one
   target option:
   `--target-thread <id>`, `--environment <id-or-path>`, or
   `--new-environment worktree [--base-branch <branch>]`. Omitted execution
   fields are preserved; target options are mutually exclusive.
+  Pass provider, model, reasoning, service tier, and permission together when
+  switching providers.
 - Use `bb automation pause <id>` / `bb automation resume <id>` to toggle,
   `bb automation run <id>` to trigger now, and `bb automation delete <id> --yes`
   to remove.
 - Use `bb automation update <id> --project <id>` with `--name` or schedule
   flags for metadata changes. To change what runs, provide a complete
   replacement execution: `--prompt` + `--provider` + `--model` for an agent,
-  or `--script`/`--script-file` for a script. Script replacements also accept
+  with optional `--reasoning` and `--service-tier`, or
+  `--script`/`--script-file` for a script. Script replacements also accept
   `--interpreter`, `--timeout`, and `--env-json '{"KEY":"value"}'`.
 - Use `bb plugin list` if `bb automation ...` is unavailable; the builtin
   automations plugin should be installed and running.
@@ -854,7 +876,9 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
     repository subdirectory for a nested plugin, the semver range with its tag
     prefix and resolved tag for a Git range install, engine ranges, install
     time, integrity/registry details, and recent activation history.
-  - `bb plugin enable|disable <id>`, `bb plugin reload [id]`,
+  - `bb plugin enable|disable <id>`, `bb plugin reload [id]` (exits 1 when a
+    reloaded plugin does not come up on its current sources: the previous
+    instance was kept, or it is degraded because a service ignored its abort),
     `bb plugin remove <id>` (deletes the plugin's settings, secrets, and
     schedules; managed git/npm files are deleted, local path sources stay on
     disk, builtin removals are remembered).

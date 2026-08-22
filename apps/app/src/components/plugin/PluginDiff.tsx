@@ -9,7 +9,9 @@ import { cn } from "@bb/shared-ui/lib/utils";
  * the caller has (a `git diff` patch, a GitHub REST patch, a single `@@` hunk)
  * into one the renderer understands, then hands it to the host boundary.
  * Content that does not parse as a patch degrades to plain monospace text
- * rather than to an empty diff.
+ * rather than to an empty diff. Full-file enrichment stays behind the lazy
+ * built-in renderer so a replacement that never delegates pays none of its
+ * parsing cost.
  */
 export function PluginDiff({
   patch,
@@ -17,6 +19,7 @@ export function PluginDiff({
   view,
   overflow,
   showLineNumbers,
+  experimental_fullFileContents: fullFileContents,
   className,
 }: DiffProps) {
   const normalized = useMemo(
@@ -39,6 +42,7 @@ export function PluginDiff({
     <DiffHost
       file={normalized.file}
       patchText={normalized.patch}
+      fullFileContents={fullFileContents ?? null}
       view={view}
       overflow={overflow}
       showLineNumbers={showLineNumbers}

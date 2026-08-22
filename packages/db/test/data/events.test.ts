@@ -31,7 +31,7 @@ import {
   listContextWindowUsageRows,
   listCompletedTurnsByThreadIds,
   listEvents,
-  listLatestGoalEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByThreadIds,
   listRecentStoredEventRows,
   listStoredConversationOutlineEventRows,
   listTimelineSegmentAnchorsDescending,
@@ -1793,7 +1793,7 @@ describe("events", () => {
     ).toEqual([4]);
   });
 
-  it("lists only the latest goal event row per thread", () => {
+  it("lists only the latest goal-state row per thread, legacy and extension rows alike", () => {
     const { db, project, thread } = setup();
     const otherThread = createThread(db, noopNotifier, {
       projectId: project.id,
@@ -1837,20 +1837,48 @@ describe("events", () => {
           timeUsedSeconds: 2,
         }),
       },
+      // The live form: the codex plugin's goal state. A later snapshot of a
+      // different kind must not shadow it.
+      {
+        threadId: otherThread.id,
+        sequence: 2,
+        type: "thread/extensionState/updated",
+        ...threadEventFields,
+        providerThreadId: "provider-thread-2",
+        data: JSON.stringify({
+          kind: "provider-codex/goal",
+          payload: {
+            objective: "Newer goal",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 3,
+            timeUsedSeconds: 3,
+          },
+        }),
+      },
+      {
+        threadId: otherThread.id,
+        sequence: 3,
+        type: "thread/extensionState/updated",
+        ...threadEventFields,
+        providerThreadId: "provider-thread-2",
+        data: JSON.stringify({ kind: "other-plugin/widget", payload: {} }),
+      },
     ]);
 
     const rowsByThreadId = new Map(
-      listLatestGoalEventRowsByThreadIds(db, {
+      listLatestThreadStateEventRowsByThreadIds(db, {
         threadIds: [thread.id, otherThread.id, thread.id],
+        kind: "provider-codex/goal",
       }).map((row) => [row.threadId, row]),
     );
 
     expect(rowsByThreadId.get(thread.id)?.type).toBe("thread/goal/cleared");
     expect(rowsByThreadId.get(thread.id)?.sequence).toBe(2);
     expect(rowsByThreadId.get(otherThread.id)?.type).toBe(
-      "thread/goal/updated",
+      "thread/extensionState/updated",
     );
-    expect(rowsByThreadId.get(otherThread.id)?.sequence).toBe(1);
+    expect(rowsByThreadId.get(otherThread.id)?.sequence).toBe(2);
   });
 
   it("batches latest goal lookups above the SQLite variable limit", () => {
@@ -1860,7 +1888,12 @@ describe("events", () => {
       (_, index) => `thr_missing_goal_${index}`,
     );
 
-    expect(listLatestGoalEventRowsByThreadIds(db, { threadIds })).toEqual([]);
+    expect(
+      listLatestThreadStateEventRowsByThreadIds(db, {
+        threadIds,
+        kind: "provider-codex/goal",
+      }),
+    ).toEqual([]);
   });
 
   it("lists only open accepted turn inputs after the latest interruption", () => {

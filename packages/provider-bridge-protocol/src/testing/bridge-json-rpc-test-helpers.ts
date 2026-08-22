@@ -1,5 +1,4 @@
 import type { JsonValue } from "@bb/domain";
-import { vi } from "vitest";
 import { z } from "zod";
 
 export type BridgeJsonRpcId = string | number;
@@ -88,10 +87,17 @@ function waitForNextBridgeTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * Capture everything a bridge writes to stdout as parsed JSON-RPC messages.
+ * Patches `process.stdout.write` directly (no test-framework spy), so the
+ * kit runs under any runner; `restore()` puts the original writer back.
+ */
 export function captureBridgeJsonRpcOutput(): CapturedBridgeJsonRpcOutput {
   const messages: BridgeJsonRpcOutputMessage[] = [];
-  const writeSpy = vi.spyOn(process.stdout, "write");
-  writeSpy.mockImplementation((buffer: string | Uint8Array) => {
+  const originalWrite = process.stdout.write;
+  const capturingWrite: typeof process.stdout.write = (
+    buffer: string | Uint8Array,
+  ) => {
     const text =
       typeof buffer === "string"
         ? buffer
@@ -102,11 +108,14 @@ export function captureBridgeJsonRpcOutput(): CapturedBridgeJsonRpcOutput {
       }
     }
     return true;
-  });
+  };
+  process.stdout.write = capturingWrite;
   return {
     messages,
     restore() {
-      writeSpy.mockRestore();
+      if (process.stdout.write === capturingWrite) {
+        process.stdout.write = originalWrite;
+      }
     },
   };
 }

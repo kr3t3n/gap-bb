@@ -1,55 +1,52 @@
+/**
+ * The runtime → bridge-adapter command vocabulary: what the runtime asks the
+ * bridge-protocol adapter to build a request for, and the execution context
+ * every session/turn command carries. The adapter contract itself is
+ * `BridgeProtocolAdapter` in bridge-protocol-adapter.ts — every provider
+ * speaks the Provider Bridge Protocol, so there is one adapter and no
+ * provider-specific implementations behind an interface.
+ */
 import type {
-  AvailableModel,
   ClientTurnRequestId,
   DynamicTool,
   InstructionMode,
+  JsonObject,
   PromptInput,
-  ProviderCapabilities,
+  PromptMode,
   ReasoningLevel,
   RuntimePermissionPolicy,
   RuntimeThreadExecutionOptions,
   ServiceTier,
-  ThreadEvent,
 } from "@bb/domain";
-import type {
-  ProviderInboundRequest,
-  ProviderRuntimeEvent,
-  BuildInteractiveResponseArgs,
-  DecodedInteractiveRequest,
-  DecodedToolCallRequest,
-  ProviderCommandPlan,
-  ProviderInteractiveResponse,
-  ProviderPostInitializeRequest,
-} from "@bb/provider-bridge-protocol/bridge-kit";
+import type { HostDaemonAcpLaunchSpec } from "@bb/host-daemon-contract";
 import type {
   AgentRuntimeBridgeLaunch,
   AgentRuntimeSkillRoot,
 } from "./types.js";
-import type { HostDaemonAcpLaunchSpec } from "@bb/host-daemon-contract";
 
-interface ProviderAcceptedCommandTranslationArgs {
+export interface ProviderAcceptedCommandTranslationArgs {
   command: AdapterCommand;
   providerThreadId?: string;
 }
 
-export interface ProviderAdapterFactoryOptions {
+/**
+ * What the runtime knows when it builds the adapter for a provider process:
+ * the plugin's bridge launch (artifact or daemon-bundled bridge), the ACP
+ * launch spec for the ACP tier, host-local write roots, and the node/bundle
+ * locations a packaged daemon runs bridges from.
+ */
+export interface CreateBridgeAdapterOptions {
   additionalWorkspaceWriteRoots: readonly string[];
   acpLaunchSpec?: HostDaemonAcpLaunchSpec;
   /**
    * A plugin-delivered bridge artifact resolved to a verified local path by
-   * the host daemon. Routes prefix-matched non-first-party providers onto the
-   * generic bridge-protocol adapter running that artifact.
+   * the host daemon, or the id of a bridge the daemon bundles (pi).
    */
   bridgeLaunch?: AgentRuntimeBridgeLaunch;
   bridgeBundleDir?: string;
   bridgeNodeEnv?: Record<string, string>;
   bridgeNodeExecutablePath?: string;
 }
-
-export type ProviderAdapterFactory = (
-  providerId: string,
-  options: ProviderAdapterFactoryOptions,
-) => ProviderAdapter;
 
 // ---------------------------------------------------------------------------
 // AdapterCommand — what the runtime asks the adapter to build
@@ -59,15 +56,13 @@ export type ProviderExecutionContext = {
   model?: string;
   serviceTier?: ServiceTier;
   reasoningLevel?: ReasoningLevel;
-  claudeCodePermissionMode?: "plan";
+  /** BB prompt mode, present only when the prompt entered one. */
+  promptMode?: PromptMode;
   /**
-   * Server-owned workflows policy. Filled explicitly at the server boundary
-   * and passed through required end-to-end; providers without the concept
-   * receive (and ignore) an explicit false.
+   * Plugin-derived, provider-scoped options from the server. Opaque here;
+   * merged over the bridge's static options onto the wire `providerOptions`.
    */
-  workflowsEnabled: boolean;
-  memoryEnabled?: boolean;
-  providerSubagentsEnabled?: boolean;
+  providerOptions: JsonObject;
   instructions?: string;
   envVars?: Record<string, string>;
   skillRoots?: readonly AgentRuntimeSkillRoot[];
@@ -198,71 +193,4 @@ export type ProviderExecutionSettingsChange = "unchanged" | "live" | "session";
 export interface ClassifyProviderExecutionSettingsChangeArgs {
   current: RuntimeThreadExecutionOptions;
   next: RuntimeThreadExecutionOptions;
-}
-
-// ---------------------------------------------------------------------------
-// ProviderAdapter — internal extension contract
-// ---------------------------------------------------------------------------
-
-export interface ProviderAdapter {
-  id: string;
-  capabilities: ProviderCapabilities;
-  /**
-   * Selects where approval escalation is enforced. `runtime` adapters emit
-   * every approval request and rely on the runtime's current thread policy.
-   * `provider` adapters enforce the policy before forwarding a request, so a
-   * forwarded approval is already known to require user input and must not be
-   * reclassified against mutable thread settings.
-   */
-  approvalEnforcedBy: "runtime" | "provider";
-  /**
-   * Classifies execution-setting drift for this provider. `live` settings are
-   * carried by the next turn command; `session` settings require rebuilding
-   * the provider session.
-   */
-  classifyExecutionSettingsChange(
-    args: ClassifyProviderExecutionSettingsChangeArgs,
-  ): ProviderExecutionSettingsChange;
-  process: { command: string; args: string[]; env?: Record<string, string> };
-
-  /**
-   * Whether this thread owns provider work that can outlive its turn. Some
-   * providers track that work by BB thread and others by provider session, so
-   * both identifiers are given.
-   */
-  hasOpenThreadWork?(args: {
-    providerThreadId: string;
-    threadId: string;
-  }): boolean;
-
-  buildCommandPlan(command: AdapterCommand): ProviderCommandPlan;
-  /**
-   * Optional provider-specific reads performed after the protocol initialize
-   * request and before any thread work starts. Best-effort requests let newer
-   * providers hydrate adapter-local state without making older provider
-   * versions unusable when they do not implement the read.
-   */
-  buildPostInitializeRequests?(): readonly ProviderPostInitializeRequest[];
-  parseModelListResult(result: unknown): {
-    models: AvailableModel[];
-    selectedOnlyModels: AvailableModel[];
-  };
-  translateEvent(event: ProviderRuntimeEvent): ThreadEvent[];
-  /**
-   * Returns normalized events implied by a successful provider command.
-   * Use this for provider protocol gaps where accepted commands do not produce
-   * their own notifications, such as accepted user input missing a userMessage.
-   */
-  translateAcceptedCommand(
-    args: ProviderAcceptedCommandTranslationArgs,
-  ): ThreadEvent[];
-  decodeToolCallRequest(
-    request: ProviderInboundRequest,
-  ): DecodedToolCallRequest | null;
-  decodeInteractiveRequest?(
-    request: ProviderInboundRequest,
-  ): DecodedInteractiveRequest | null;
-  buildInteractiveResponse?(
-    args: BuildInteractiveResponseArgs,
-  ): ProviderInteractiveResponse;
 }

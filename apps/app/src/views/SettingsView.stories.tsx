@@ -6,6 +6,8 @@ import {
   type AppTheme,
   type Experiments,
   type Host,
+  defaultAppSettings,
+  type AppSettings,
 } from "@bb/domain";
 import type {
   ProviderUsage,
@@ -19,7 +21,6 @@ import { CommunitySettingsSection } from "@/components/settings/CommunitySetting
 import { KeyboardSettingsSection } from "@/components/settings/KeyboardSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
 import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
-import type { SettingsProviderId } from "@/components/settings/settings-nav";
 import {
   SettingsStoryChrome,
   type SettingsStoryRoute,
@@ -39,10 +40,10 @@ import {
   ExperimentsSettingsSection,
   GeneralSettingsSection,
   LocalOpenTargetSettingsSection,
-  ProviderSettingsSection,
   type LocalOpenTargetSettingsSectionProps,
 } from "./SettingsView";
 import { MachineSettingsView } from "./MachineSettingsView";
+import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 
 export default {
   title: "settings/Settings",
@@ -413,25 +414,14 @@ function UsageLimitsStory() {
   );
 }
 
-function ProviderSettingsStory({
-  providerId,
-}: {
-  providerId: SettingsProviderId;
-}) {
-  const [memoryEnabled, setMemoryEnabled] = useState(true);
-  const [subagentsDisabled, setSubagentsDisabled] = useState(false);
-  const [workflowsDisabled, setWorkflowsDisabled] = useState(false);
-
+function ProvidersSettingsStory() {
+  const [generalSettings, setGeneralSettings] =
+    useState<AppSettings>(defaultAppSettings);
   return (
-    <ProviderSettingsSection
-      providerId={providerId}
-      memoryEnabled={memoryEnabled}
-      subagentsDisabled={subagentsDisabled}
-      workflowsDisabled={workflowsDisabled}
+    <ProvidersSettingsSection
       disabled={false}
-      onMemoryEnabledChange={setMemoryEnabled}
-      onSubagentsDisabledChange={setSubagentsDisabled}
-      onWorkflowsDisabledChange={setWorkflowsDisabled}
+      generalSettings={generalSettings}
+      onGeneralSettingsChange={setGeneralSettings}
     />
   );
 }
@@ -447,11 +437,10 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
       </Routes>
     );
   }
-  if (route.kind === "provider") {
-    return <ProviderSettingsStory providerId={route.id} />;
-  }
 
   switch (route.id) {
+    case "providers":
+      return <ProvidersSettingsStory />;
     case "appearance":
       return <AppearanceSettingsStory />;
     case "keyboard":

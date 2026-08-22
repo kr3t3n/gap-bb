@@ -33,6 +33,7 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_NOTIFICATION_METHODS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   type InitializeResult,
   experimental_defineProviderBridge,
@@ -381,6 +382,9 @@ async function forwardDynamicToolCall(args: {
     return { ok: false, error: "No active ACP session for dynamic tool call." };
   }
 
+  // The agent's own tool_call for this MCP call is the timeline row; the
+  // translator binds it to the bb tool so the row reads as that tool (Q31).
+  session.translator.noteInjectedToolCall(session.bbThreadId, args.tool);
   try {
     const result = await sendRuntimeRequest("item/tool/call", {
       providerThreadId: session.providerThreadId,
@@ -838,6 +842,7 @@ async function loadSessionDiscoveredModels(
     args: agent.args,
     cwd: agent.cwd ?? process.cwd(),
     env: childEnv,
+    recordThreadId: null,
     onNotification: () => {},
     onRequest: (_method, _params, responder) => {
       responder.error(-32601, "ACP model discovery does not support requests");
@@ -1380,6 +1385,10 @@ function handlePermissionRequest(
           session.bbThreadId,
           toolCall.toolCallId,
         ),
+        injectedTool: session.translator.getInjectedToolBinding(
+          session.bbThreadId,
+          toolCall.toolCallId,
+        ),
       }
     : undefined;
 
@@ -1593,6 +1602,16 @@ async function startAgentSession(
   }
 
   const translator = createAcpDeltaTranslator();
+  // The session's bb-injected tools: a proxied call to one is a bb tool and
+  // reads the way its definition says (Q31).
+  translator.configureInjectedTools(
+    (params.dynamicTools ?? []).map((tool) => ({
+      name: tool.name,
+      ...(tool.presentation === undefined
+        ? {}
+        : { presentation: tool.presentation }),
+    })),
+  );
   // Ordering guarantee: thread/identity precedes any thread/delta for the
   // session, so pre-identity notifications are held and flushed after the
   // identity goes out.
@@ -1627,6 +1646,7 @@ async function startAgentSession(
     args: launch.args,
     cwd: params.cwd,
     env: childEnv,
+    recordThreadId: bbThreadId,
     onNotification: (method, notificationParams) =>
       handleAgentNotification(session, method, notificationParams),
     onRequest: (method, requestParams, responder) =>
@@ -2351,6 +2371,13 @@ async function handleRequest(
           threadGoalClear: false,
           fork: "tip",
           approvalEnforcedBy: "runtime",
+          // grammarVersions [3, 3] — this bridge emits the v3 delta grammar
+          // (one streaming dialect; the v3 item shapes land per bridge in
+          // WS1b). steerMode "queue" — ACP v1 has no mid-loop inject: a hard
+          // steer cancels the live prompt and re-prompts with the queued text
+          // at the next boundary.
+          grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+          steerMode: "queue",
         },
       };
       sendResult(request.id, result);

@@ -379,6 +379,73 @@ describe("bb.agents.registerTool", () => {
     );
   });
 
+  it("resolves one full row presentation per injected tool", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-presented-tools",
+      serverSource: "export default function plugin() {}",
+    });
+    await service.installPath(rootDir);
+    const api = service.getApi("presented-tools")!;
+
+    api.agents.registerTool({
+      name: "declared_tool",
+      description: "Declares its whole presentation",
+      experimental_presentation: {
+        label: { pending: "Looking things up", completed: "Looked things up" },
+        icon: { glyph: "Search" },
+        suppress: true,
+        tint: { light: "#123456", dark: "#654321" },
+      },
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    api.agents.registerTool({
+      name: "labelled_tool",
+      description: "Only status labels",
+      experimental_statusLabels: { pending: "Working", completed: "Worked" },
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    api.agents.registerTool({
+      name: "plain_tool",
+      description: "Declares nothing",
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+
+    const byName = new Map(
+      service.listAgentTools().map((entry) => [entry.tool.name, entry.tool]),
+    );
+    expect(byName.get("declared_tool")?.presentation).toEqual({
+      label: { pending: "Looking things up", completed: "Looked things up" },
+      icon: { glyph: "Search" },
+      suppress: true,
+      tint: { light: "#123456", dark: "#654321" },
+    });
+    // Status labels still supply the label; the plugin's branding glyph
+    // ("Zap" in the fixture manifest) is the icon when the tool names none.
+    expect(byName.get("labelled_tool")?.presentation).toEqual({
+      label: { pending: "Working", completed: "Worked" },
+      icon: { glyph: "Zap" },
+    });
+    expect(byName.get("plain_tool")?.presentation).toEqual({
+      label: { pending: "Running plain_tool", completed: "Ran plain_tool" },
+      icon: { glyph: "Zap" },
+    });
+
+    expect(() =>
+      (api.agents.registerTool as (tool: unknown) => void)({
+        name: "bad_presentation",
+        description: "Invalid presentation fixture",
+        experimental_presentation: { icon: { glyph: "" } },
+        parameters: { type: "object" },
+        execute: () => "unused",
+      }),
+    ).toThrow(
+      'tool "bad_presentation" experimental_presentation.icon must be { glyph: string }',
+    );
+  });
+
   it("cross-plugin name collision drops the later registration with a status detail", async () => {
     const first = await writePlugin(workDir, {
       name: "bb-plugin-collide-a",

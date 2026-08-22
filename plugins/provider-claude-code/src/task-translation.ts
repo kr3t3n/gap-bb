@@ -23,6 +23,7 @@ import {
   type ClaudeTaskUsage,
   type ClaudeWorkflowAgentRecord,
 } from "./schemas.js";
+import { backgroundTaskPresentation } from "./presentation.js";
 
 /**
  * Claude background-task dialect state → narrow-grammar deltas.
@@ -284,6 +285,15 @@ function buildClaudeTaskProgressDelta(
   };
 }
 
+/** The row presentation of a task; the description can change by patch. */
+function claudeTaskPresentation(task: ClaudeTrackedTask) {
+  return backgroundTaskPresentation({
+    taskType: task.taskType,
+    description: task.description,
+    workflowName: task.workflowName,
+  });
+}
+
 function buildClaudeTaskCloseDelta(task: ClaudeTrackedTask): ThreadDelta {
   const shape = buildClaudeTaskShape(task);
   return {
@@ -291,6 +301,7 @@ function buildClaudeTaskCloseDelta(task: ClaudeTrackedTask): ThreadDelta {
     key: taskKey(task),
     status: shape.status,
     item: shape,
+    presentation: claudeTaskPresentation(task),
   };
 }
 
@@ -363,6 +374,7 @@ export function translateClaudeTaskMessage(
         kind: "item.open",
         key: taskKey(task),
         item: buildClaudeTaskShape(task),
+        presentation: claudeTaskPresentation(task),
       },
     ];
   }

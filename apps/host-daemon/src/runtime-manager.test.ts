@@ -127,6 +127,7 @@ async function writeInjectedSkillSource(
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     tempDirs
       .splice(0)
@@ -1183,6 +1184,34 @@ describe("RuntimeManager", () => {
     );
   });
 
+  it("forwards the bridge record-mode directory to provider processes but not the shell env", async () => {
+    vi.stubEnv("BB_PROVIDER_BRIDGE_RECORD_DIR", "/tmp/provider-recordings/raw");
+    const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
+    const createRuntime = vi.fn(() => createFakeRuntime());
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime,
+      shellEnv: {
+        PATH: "/tmp/bb-bin:/usr/bin",
+      },
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: "/tmp/env-1",
+    });
+
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: {
+          PATH: "/tmp/bb-bin:/usr/bin",
+          BB_PROVIDER_BRIDGE_RECORD_DIR: "/tmp/provider-recordings/raw",
+        },
+        shellEnv: { PATH: "/tmp/bb-bin:/usr/bin" },
+      }),
+    );
+  });
+
   it("passes the resolved shell PATH to managed worktree setup", async () => {
     const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
     const manager = new RuntimeManager({
@@ -1206,7 +1235,31 @@ describe("RuntimeManager", () => {
 
     expect(provisionWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({
-        setupPath: "/resolved/user/bin:/usr/bin:/bin",
+        shellPath: "/resolved/user/bin:/usr/bin:/bin",
+      }),
+    );
+  });
+
+  it("passes the resolved shell PATH to unmanaged workspace Git", async () => {
+    const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      shellEnv: {
+        PATH: "/resolved/user/bin:/usr/bin:/bin",
+      },
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      provision: {
+        workspaceProvisionType: "unmanaged",
+        path: "/tmp/env-1",
+      },
+    });
+
+    expect(provisionWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shellPath: "/resolved/user/bin:/usr/bin:/bin",
       }),
     );
   });

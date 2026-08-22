@@ -103,8 +103,9 @@ const MANAGED_CONFIG_KEYS = BB_APP_MANAGED_CONFIG_KEYS;
 const MANAGED_CONFIG_KEY_VALUES = new Set<string>(MANAGED_CONFIG_KEYS);
 const STARTUP_ONLY_MANAGED_CONFIG_KEYS = new Set<string>(["BB_LOG_LEVEL"]);
 // Keep this in sync with loadServerConfig and direct process.env reads made
-// while assembling the server. BB_APP_VERSION and NODE_ENV are omitted because
-// the launcher owns and overwrites them rather than applying env.json values.
+// while assembling the server. BB_APP_VERSION, BB_SERVER_LAUNCH_ID, and
+// NODE_ENV are omitted because the launcher owns and overwrites them rather
+// than applying env.json values.
 const STARTUP_ONLY_MANAGED_ENV_KEYS = new Set<string>([
   "BB_APP_SURFACE",
   "BB_APP_URL",
@@ -151,6 +152,13 @@ const hostDaemonStatusSchema = z
     connected: z.boolean(),
     hostId: z.string().min(1),
     serverUrl: z.string().min(1),
+  })
+  .passthrough();
+
+const serverHealthResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    launchId: z.string().min(1).optional(),
   })
   .passthrough();
 
@@ -436,8 +444,10 @@ export interface DelayMillisecondsArgs {
   ms: number;
 }
 
-interface WaitForHealthArgs {
+interface WaitForServerHealthArgs {
   childProcess: ChildProcess | null;
+  /** Launch id handed to the server child; only a /health echoing it counts. */
+  expectedLaunchId: string;
   timeoutMs?: number;
   url: string;
 }
@@ -2253,28 +2263,64 @@ async function maybeAddAutoJoinEnv(
   };
 }
 
-async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+async function readServerHealthLaunchId(
+  response: Response,
+): Promise<string | null> {
+  try {
+    const health = serverHealthResponseSchema.safeParse(await response.json());
+    return health.success ? (health.data.launchId ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Polls the server child's /health until it answers with the launch id the
+ * launcher handed it. A 200 alone proves only that something listens on the
+ * port: when another bb server already owns it, that server answers on the
+ * first poll while the child is still booting and about to die with
+ * EADDRINUSE. Accepting it would make the launcher enroll its daemon against
+ * the wrong server (get-bb/bb#1558).
+ */
+export async function waitForServerHealth(
+  args: WaitForServerHealthArgs,
+): Promise<void> {
   const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
+  let foreignServerAnswered = false;
+  const describeFailure = (reason: string): string =>
+    foreignServerAnswered
+      ? `${reason}: another server is already answering at ${args.url}`
+      : reason;
   while (Date.now() <= deadline) {
     if (
       args.childProcess &&
       (args.childProcess.exitCode !== null ||
         args.childProcess.signalCode !== null)
     ) {
-      throw new Error("Process exited before becoming healthy");
+      throw new Error(
+        describeFailure("Process exited before becoming healthy"),
+      );
     }
     try {
-      const response = await fetch(args.url);
+      const response = await fetch(args.url, {
+        signal: AbortSignal.timeout(HEALTH_CHECK_REQUEST_TIMEOUT_MS),
+      });
       if (response.ok) {
-        return;
+        const launchId = await readServerHealthLaunchId(response);
+        if (launchId === args.expectedLaunchId) {
+          return;
+        }
+        foreignServerAnswered = true;
       }
     } catch {}
     await new Promise<void>((resolvePromise) => {
       setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
     });
   }
-  throw new Error(`Timed out waiting for health at ${args.url}`);
+  throw new Error(
+    describeFailure(`Timed out waiting for health at ${args.url}`),
+  );
 }
 
 function normalizeServerUrlForComparison(serverUrl: string): string {
@@ -2984,25 +3030,28 @@ function logManagedProcessStartupFailureContext(
   log(" ", dim(`logs: ${args.context.logDir}/`));
 }
 
-async function startFullStackServerProcess(
+export async function startFullStackServerProcess(
   args: StartFullStackServerProcessArgs,
 ): Promise<ManagedProcessRun> {
+  // Fresh per spawn: the probe must match this child, not any earlier one.
+  const launchId = randomUUID();
   const serverRun = spawnNamedManagedProcess({
     args: [args.context.serverEntry],
     command: process.execPath,
-    env: args.env,
+    env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
     outputBuffer: args.outputBuffer,
     processName: "server",
   });
   args.processes.serverRun = serverRun;
 
   try {
-    await waitForHealth({
+    await waitForServerHealth({
       childProcess: serverRun.childProcess,
+      expectedLaunchId: launchId,
       url: `${args.context.serverUrl}/health`,
     });
     return serverRun;
-  } catch {
+  } catch (error) {
     await terminateProcessIfRunning({
       childProcess: serverRun.childProcess,
       processName: "server",
@@ -3011,7 +3060,9 @@ async function startFullStackServerProcess(
     if (args.processes.serverRun === serverRun) {
       args.processes.serverRun = null;
     }
-    throw new Error("Server failed to become healthy");
+    throw new Error(
+      `Server failed to become healthy: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -3430,8 +3481,9 @@ export async function runBbApp(
     beginStep("Starting server");
     try {
       await startServer();
-    } catch {
-      endStep(red("✗"), "Server failed to start (health check timed out)");
+    } catch (error) {
+      endStep(red("✗"), "Server failed to start");
+      log(" ", dim(error instanceof Error ? error.message : String(error)));
       logManagedProcessStartupFailureContext({
         context,
         processName: "server",

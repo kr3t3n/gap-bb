@@ -20,6 +20,14 @@ const entries = [
     output: "dist/provider-bridge.js",
     external: ["zod", "zod/*"],
   },
+  // The testing kit: conformance scenarios, the real delta assembler, the
+  // JSON-RPC harness and the calibration normalizer. Framework-agnostic, so
+  // only zod stays external.
+  {
+    source: "src/provider-bridge-testing.ts",
+    output: "dist/provider-bridge-testing.js",
+    external: ["zod", "zod/*"],
+  },
   { source: "src/host.ts", output: "dist/host.js", external: [] },
   {
     source: "src/internal/composer-customization-validation.ts",

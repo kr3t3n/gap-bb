@@ -171,6 +171,36 @@ describe("workspace provisioning", () => {
     expect(await new Workspace(targetPath).currentBranch).toBe("feature");
   });
 
+  it("creates worktrees from a bare repository root that holds sibling worktrees", async () => {
+    const origin = await initRepoWithOptionalSetup();
+    const root = await makeTempDir("bb-worktree-bare-root-");
+    await runGit(["clone", "--bare", origin, ".bare"], { cwd: root });
+    await fs.writeFile(path.join(root, ".git"), "gitdir: ./.bare\n", "utf8");
+    await runGit(["worktree", "add", "existing", "-b", "existing"], {
+      cwd: root,
+    });
+    const parentDir = await makeTempDir("bb-worktree-bare-parent-");
+    const targetPath = path.join(parentDir, "feature");
+
+    await expect(
+      createWorktree({
+        sourcePath: root,
+        targetPath,
+        branchName: "feature",
+        baseBranch: null,
+        timeoutMs: 900000,
+      }),
+    ).resolves.toEqual({ path: targetPath });
+
+    expect(await new Workspace(targetPath).currentBranch).toBe("feature");
+    const worktrees = await runGit(["worktree", "list", "--porcelain"], {
+      cwd: root,
+    });
+    expect(worktrees.stdout.split("\n")).toContain(
+      `worktree ${await fs.realpath(targetPath)}`,
+    );
+  });
+
   it("fetches remote base branches before creating worktrees", async () => {
     const { remotePath, repoPath } = await initRemoteBackedRepo();
     const parentDir = await makeTempDir("bb-worktree-remote-parent-");
@@ -537,7 +567,7 @@ describe("workspace provisioning", () => {
     const result = await runSetupScript({
       workspacePath,
       timeoutMs: 900000,
-      setupPath: `${binPath}${path.delimiter}/usr/bin:/bin`,
+      shellPath: `${binPath}${path.delimiter}/usr/bin:/bin`,
     });
 
     expect(result.ran).toBe(true);

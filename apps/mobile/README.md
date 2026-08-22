@@ -105,10 +105,11 @@ src/
                          thread/ — thread detail: ThreadDetailScreen (list +
                          prompt area inside KeyboardPaddingView), the native
                          header pieces (title + status subtitle, panel + "…"),
-                         cards/ (the prompt chip row: workflows, background
-                         tasks, plan + Exit, goal + Clear, to-dos, each a pill
-                         that opens a detail sheet; model fallback,
-                         context-window ring), prompt-area/
+                         cards/ (PromptChip + the prompt chip row: workflows,
+                         background tasks (glyph shimmers while live), plan +
+                         Exit, goal + Clear, to-dos, model fallback, plus the
+                         context/ chips, each a pill that opens a detail
+                         sheet; context-window ring), prompt-area/
                          (ThreadPromptArea: banner-or-stack + the follow-up
                          Composer; useFollowUpComposer: draft, submit mode,
                          send / queue / steer / stop, edit modes, quoting;
@@ -128,12 +129,13 @@ src/
                          host/ TimelineRowHostProvider (server URL, sender
                          metadata, thread navigation, image lightbox,
                          long-press message actions); lightbox/);
-                         banner/ — ThreadContextBanner (parent / fork row,
-                         active children card, pull request row + Mark ready /
-                         Merge sheet, changed-files row → WorkspaceChangesList +
-                         merge-base row → MergeBasePickerSheet, archived /
-                         environment-gone rows), use-thread-context-banner.ts
-                         (data assembly), pure banner-model.ts;
+                         context/ — ThreadContextChips (related-thread chip,
+                         child threads / needs-input chip, pull request chip +
+                         Mark ready / merge methods, changed-files chip → sheet
+                         with WorkspaceChangesList, merge base →
+                         MergeBasePickerSheet, Open diff; archived /
+                         environment-gone status chip), use-thread-context-chips.ts
+                         (data assembly), pure context-model.ts;
                          actions/ — MessageActionSheet + message-actions-model
                          (copy / quote paragraph / add to chat / edit / fork /
                          send to main), useMessageActionHandlers (fork →
@@ -146,7 +148,7 @@ src/
                          interactions/ — PendingInteractionBanner (approval /
                          user question / ask-user-question + secret-request
                          plugin forms / unsupported-plugin card), QuestionForm,
-                         SecretRequestForm, ChildThreadPendingInteractions;
+                         SecretRequestForm;
                          queue/ — QueuedMessagesList (send now, edit via
                          onEdit, move up/down, group toggle, delete);
                          dev/ — renderer showcases (markdown, work rows) +
@@ -788,11 +790,22 @@ push key); nobody needs a local Xcode signing setup to ship.
   `eas build -p ios --profile <profile> [--auto-submit]` with
   `EXPO_TOKEN`. EAS builds, then uploads to TestFlight; the job waits for
   both and fails when either fails. Logs are on expo.dev under the project's
-  Builds and Submissions (the run summary links them).
+  Builds and Submissions (the run summary links them). After a submit, the
+  job runs `scripts/testflight-distribute.mjs`, which waits for App Store
+  Connect to process the build, submits it for Beta App Review when it has
+  none, and adds it to the external group named by the `external_group`
+  input (default `External testers`; empty skips the step). Run the script
+  by hand with `node scripts/testflight-distribute.mjs --version X.Y.Z
+  --build N` from `apps/mobile` with the `.p8` in place.
   Run it alone from the Actions tab ("Mobile iOS (EAS)") or
   `gh workflow run mobile-ios-eas.yml -f profile=production -f submit=true`.
   The nightly `publish-bb-app.yml` calls the same workflow after the npm
-  nightly publish with the numeric base of the nightly version. Repo
+  nightly publish with an empty `version`, so every nightly keeps the
+  marketing version committed in `app.json` and only the EAS build number
+  moves. This is deliberate: TestFlight needs a Beta App Review for the
+  first build of each new marketing version, and later builds of the same
+  version skip it. Bump `app.json` `version` only when you want a new
+  review, for example for a store release. Repo
   secrets: `EXPO_TOKEN` (a robot token from the `bb-team` Expo org) and
   `ASC_API_KEY_P8` (the `.p8` contents).
 - The `expo-modules-jsi` pnpm patch and the `lightningcss` override ship
@@ -812,9 +825,13 @@ push key); nobody needs a local Xcode signing setup to ship.
 App Store Connect finishes processing it, usually within 30 minutes. The group
 `bb team` exists and the nightly feeds it.
 
-**External testers** need a Beta App Review on the first build, and Apple
-usually auto-approves later builds. Before a build can go to an external group,
-App Store Connect needs all of this:
+**External testers** need a Beta App Review on the first build of each
+marketing version, and Apple usually auto-approves later builds of that
+version. The nightly keeps one marketing version for this reason (see "CI"
+above). Apple offers "Automatically distribute builds" only for internal
+groups, so the CI distribute step adds each submitted build to the external
+group through the App Store Connect API. Before a build can go to an external
+group, App Store Connect needs all of this:
 
 - **Test Information** (`betaAppLocalizations`): a feedback email, a beta
   description, and the privacy policy URL <https://getbb.app/privacy>. Per
@@ -854,11 +871,9 @@ Write to <EMAIL> if the server does not respond.
 Rehearse it before submitting: hand a colleague a phone that has never run bb,
 give them only these notes, and check that they reach a thread.
 
-The marketing version climbs on every nightly, because the EAS job writes the
-npm version into `app.json`. A new version string is more likely to trigger a
-fresh Beta App Review than another build of the same version. If external
-testers become the main audience, pin the TestFlight marketing version and let
-the EAS build number tell nightlies apart.
+The nightly keeps the marketing version in `app.json` and lets the EAS build
+number tell nightlies apart, because a new version string triggers a fresh
+Beta App Review and another build of the same version usually does not.
 
 ## Local state
 

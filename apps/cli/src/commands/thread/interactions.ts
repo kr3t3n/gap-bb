@@ -134,6 +134,9 @@ function formatInteractionKind(interaction: PendingInteraction): string {
       return "permission";
     case "plan":
       return "plan";
+    // Declarative base only: no producer emits this subject until WS5.
+    case "tool_use":
+      return "tool-use";
     default:
       return assertNever(interaction.payload.subject);
   }
@@ -249,6 +252,14 @@ function printApprovalInteraction(
       console.log("  Plan:");
       for (const line of interaction.payload.subject.plan.split("\n")) {
         console.log(`    ${line}`);
+      }
+      break;
+    case "tool_use":
+      // Declarative base only: no producer emits this subject until WS5.
+      for (const line of formatPendingInteractionSubjectDetailLines(
+        interaction,
+      )) {
+        console.log(`  ${line}`);
       }
       break;
     default:

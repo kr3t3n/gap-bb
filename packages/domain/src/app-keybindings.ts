@@ -36,6 +36,7 @@ export const PANE_FOCUS_APP_COMMAND_IDS = [
 ] as const;
 
 export const APP_COMMAND_IDS = [
+  "palette.open",
   "thread.new",
   "thread.search",
   "thread.rename",

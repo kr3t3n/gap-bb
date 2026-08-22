@@ -5,6 +5,7 @@ import {
   type MenuItemConstructorOptions,
 } from "electron";
 import type { ApplicationMenuAccelerators } from "./desktop-menu-shortcuts.js";
+import type { ConnectServerSyncSkipReason } from "./connect-server-sync.js";
 
 const SERVER_DAEMON_LOGS_MENU_LABEL = "Server & Daemon Logs";
 const OPEN_NEW_TAB_MENU_LABEL = "New Tab";
@@ -19,6 +20,20 @@ const FORCE_RELOAD_ACCELERATOR = "CommandOrControl+Shift+R";
 const SERVER_MENU_LABEL = "Server";
 const SERVER_MENU_ITEM_ID = "bb-server-menu";
 export const SET_SERVER_URL_MENU_LABEL = "Set Server URL…";
+/**
+ * Disabled row shown in place of the Connect server list when the last sync
+ * produced none, so an empty list is not mistaken for an empty account.
+ */
+export const CONNECT_SERVERS_SKIPPED_MENU_LABELS: Record<
+  ConnectServerSyncSkipReason,
+  string
+> = {
+  "no-credential": "No Connect servers — sign in to bb Connect",
+  "not-paired": "No Connect servers — Connect not paired on This Mac",
+  "plugin-disabled": "No Connect servers — Connect plugin disabled",
+  unauthorized: "No Connect servers — sign in to bb Connect again",
+  unavailable: "No Connect servers — could not reach bb Connect",
+};
 
 interface ApplicationMenuServerItem {
   checked: boolean;
@@ -29,6 +44,7 @@ interface ApplicationMenuServerItem {
 export interface InstallApplicationMenuArgs {
   accelerators: ApplicationMenuAccelerators;
   isMac: boolean;
+  openAbout(): void;
   openNewTab(): void;
   openNewThread(): void;
   openSettings(): void;
@@ -45,6 +61,11 @@ export interface InstallApplicationMenuArgs {
   onServerMenuWillShow?: () => void;
   serverDaemonLogsMenuEnabled: boolean;
   servers: ApplicationMenuServerItem[];
+  /**
+   * Why `servers` lists no Connect servers, or null when it does (or when
+   * the account really has none).
+   */
+  connectServersSkipReason: ConnectServerSyncSkipReason | null;
 }
 
 function createServerDaemonLogsMenuItems(
@@ -75,8 +96,17 @@ function createServerMenuItems(
       type: "radio" as const,
     }),
   );
+  const skipReason = args.connectServersSkipReason;
   return [
     ...serverItems,
+    ...(skipReason === null
+      ? []
+      : [
+          {
+            enabled: false,
+            label: CONNECT_SERVERS_SKIPPED_MENU_LABELS[skipReason],
+          },
+        ]),
     { type: "separator" },
     {
       label: SET_SERVER_URL_MENU_LABEL,
@@ -94,7 +124,12 @@ export function buildApplicationMenuTemplate(
     {
       label: app.name,
       submenu: [
-        { role: "about" },
+        {
+          label: `About ${app.name}`,
+          click() {
+            args.openAbout();
+          },
+        },
         { type: "separator" },
         {
           accelerator: args.accelerators.openSettings,
@@ -218,10 +253,7 @@ export function buildApplicationMenuTemplate(
           submenu: createServerMenuItems(args),
         },
         ...(args.isMac
-          ? [
-              { type: "separator" as const },
-              { role: "front" as const },
-            ]
+          ? [{ type: "separator" as const }, { role: "front" as const }]
           : []),
       ],
     },

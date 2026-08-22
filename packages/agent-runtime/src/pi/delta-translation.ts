@@ -17,7 +17,10 @@ import {
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { z } from "zod";
-import type { ProviderRawEvent } from "@bb/domain";
+import type {
+  ProviderRawEvent,
+  ThreadEventTokenUsageBreakdown,
+} from "@bb/domain";
 import { providerRawEventSchema, toPositiveNumber } from "@bb/domain";
 import type {
   DeltaItemShape,
@@ -25,6 +28,8 @@ import type {
   ThreadDelta,
 } from "@bb/provider-bridge-protocol";
 import {
+  ZERO_TOKEN_USAGE,
+  addTokenUsage,
   bashArgsSchema,
   errorEnvelopeSchema,
   extractResultText,
@@ -60,6 +65,8 @@ const piEventTypeSchema = z
       "agent_start",
       "compaction_end",
       "compaction_start",
+      "message_end",
+      "message_start",
       "message_update",
       "tool_execution_end",
       "tool_execution_start",
@@ -132,6 +139,26 @@ const piConversationMessageSchema = z
     provider: z.string().optional(),
     model: z.string().optional(),
     usage: piAssistantUsageSchema.optional(),
+  })
+  .passthrough();
+
+/**
+ * Pi's `message_start`/`message_end` for an extension-injected message
+ * (`pi.sendMessage`, Pi's `CustomMessage`). Only this role is parsed: bb
+ * already owns the user, assistant, and tool-result boundaries through its own
+ * input lifecycle and the streamed/terminal assistant payloads. `display`
+ * is the extension's own statement of whether the message is meant to be seen.
+ */
+const piCustomMessageBoundaryEventSchema = z
+  .object({
+    type: z.enum(["message_end", "message_start"]),
+    message: z
+      .object({
+        role: z.literal("custom"),
+        content: z.union([z.string(), z.array(piMessageContentBlockSchema)]),
+        display: z.boolean(),
+      })
+      .passthrough(),
   })
   .passthrough();
 
@@ -247,6 +274,15 @@ const PI_COMMAND_TOOL_NAMES = new Set(["bash"]);
 const PI_FILE_CHANGE_TOOL_NAMES = new Set(["edit", "write"]);
 
 const ASSISTANT_STREAM_KEY = "assistant";
+
+/**
+ * One anonymous stream per thinking block, keyed by its content index and
+ * prefixed so it can never share a key with the assistant stream or another
+ * channel-keyed family (compaction).
+ */
+function thinkingStreamChannel(contentIndex: number): string {
+  return `thinking-${contentIndex}`;
+}
 
 // ---------------------------------------------------------------------------
 // Tool classification (pi dialect → delta item shapes)
@@ -416,6 +452,21 @@ export function createPiDeltaTranslator(
 
   /** `${threadId} ${toolCallId}` → shape emitted on the call's item.open. */
   const startedToolShapes = new Map<string, DeltaItemShape>();
+  /**
+   * Running session token total per thread for the `usage` delta: pi reports
+   * per turn, and this translator outlives sessions, so the bridge resets a
+   * thread's total at every session construction (`resetThread`, beside its
+   * `session.reset`).
+   */
+  const cumulativeTokensByThreadId = new Map<
+    string,
+    ThreadEventTokenUsageBreakdown
+  >();
+
+  function resetThread(threadId: string): void {
+    cumulativeTokensByThreadId.delete(threadId);
+    clearThreadToolShapes({ threadId });
+  }
 
   function toolShapeKey(
     context: PiDeltaTranslationContext | undefined,
@@ -641,6 +692,27 @@ export function createPiDeltaTranslator(
         return [{ kind: "turn.open" }];
       }
 
+      case "message_end":
+      case "message_start": {
+        const piEvent = piCustomMessageBoundaryEventSchema.safeParse(event);
+        // Non-custom boundaries translate to nothing on purpose; the
+        // visibility metadata rates them noise (known roles) or unknown.
+        if (!piEvent.success) {
+          return [];
+        }
+        if (
+          piEvent.data.type === "message_end" ||
+          !piEvent.data.message.display
+        ) {
+          return [];
+        }
+        const text = extractCustomMessageText(piEvent.data.message.content);
+        if (text === undefined) {
+          return [];
+        }
+        return [{ kind: "input.provider", text, ...parentRefField }];
+      }
+
       case "compaction_start": {
         const parsed = piCompactionStartEventSchema.safeParse(event);
         if (!parsed.success) {
@@ -757,19 +829,25 @@ export function createPiDeltaTranslator(
           const text = extractAssistantText(lastAssistant);
           if (text) {
             deltas.push({
-              kind: "message.close",
-              channel: "assistant",
-              streamKey: ASSISTANT_STREAM_KEY,
+              kind: "item.textClose",
+              key: { channel: ASSISTANT_STREAM_KEY, ...parentRefField },
+              channel: "agentMessage",
               text,
-              ...parentRefField,
             });
           }
         }
         const usage = toAssistantUsageBreakdown(lastAssistant);
         if (usage) {
+          const threadKey = context?.threadId ?? "";
+          const total = addTokenUsage(
+            cumulativeTokensByThreadId.get(threadKey) ?? ZERO_TOKEN_USAGE,
+            usage,
+          );
+          cumulativeTokensByThreadId.set(threadKey, total);
           deltas.push({
-            kind: "usage.turn",
-            tokens: usage,
+            kind: "usage",
+            total,
+            last: usage,
             modelContextWindow: resolveModelContextWindow(lastAssistant),
           });
         }
@@ -797,11 +875,10 @@ export function createPiDeltaTranslator(
           }
           return [
             {
-              kind: "message.delta",
-              channel: "assistant",
-              streamKey: ASSISTANT_STREAM_KEY,
+              kind: "item.textDelta",
+              key: { channel: ASSISTANT_STREAM_KEY, ...parentRefField },
+              channel: "agentMessage",
               text: delta,
-              ...parentRefField,
             },
           ];
         }
@@ -815,11 +892,13 @@ export function createPiDeltaTranslator(
           }
           return [
             {
-              kind: "message.delta",
-              channel: "reasoning",
-              streamKey: String(assistantEvent.contentIndex),
+              kind: "item.textDelta",
+              key: {
+                channel: thinkingStreamChannel(assistantEvent.contentIndex),
+                ...parentRefField,
+              },
+              channel: "reasoningText",
               text: delta,
-              ...parentRefField,
             },
           ];
         }
@@ -833,11 +912,13 @@ export function createPiDeltaTranslator(
           }
           return [
             {
-              kind: "message.close",
-              channel: "reasoning",
-              streamKey: String(assistantEvent.contentIndex),
+              kind: "item.textClose",
+              key: {
+                channel: thinkingStreamChannel(assistantEvent.contentIndex),
+                ...parentRefField,
+              },
+              channel: "reasoningText",
               text: content,
-              ...parentRefField,
             },
           ];
         }
@@ -948,7 +1029,7 @@ export function createPiDeltaTranslator(
     }
   }
 
-  return { translate };
+  return { translate, resetThread };
 }
 
 // ---------------------------------------------------------------------------
@@ -978,6 +1059,24 @@ function extractAssistantText(message: PiAssistantMessage): string | undefined {
     }
   }
   const text = chunks.join("\n").trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function extractCustomMessageText(
+  content: z.infer<
+    typeof piCustomMessageBoundaryEventSchema
+  >["message"]["content"],
+): string | undefined {
+  const text = (
+    typeof content === "string"
+      ? content
+      : content
+          .flatMap((block) => {
+            const parsedBlock = textBlockSchema.safeParse(block);
+            return parsedBlock.success ? [parsedBlock.data.text] : [];
+          })
+          .join("\n")
+  ).trim();
   return text.length > 0 ? text : undefined;
 }
 

@@ -11,6 +11,10 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { hostsQueryKey } from "./queries/query-keys";
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
+import {
+  providerListCacheKey,
+  writeCachedProviderList,
+} from "@/lib/provider-list-cache";
 
 const PROJECT_ID = "proj_prompt_defaults";
 const GLOBAL_PROVIDER_ID = "global-provider";
@@ -43,6 +47,16 @@ function readyProviderStates(providerId: string): SystemProviderStatesResponse {
       },
     ],
   };
+}
+
+/** A last-known provider list that includes codex beside the fixture provider. */
+function rememberedProviders() {
+  const base = executionOptionsResponse().providers;
+  const template = base[0];
+  if (template === undefined) {
+    throw new Error("execution-options fixture has no provider");
+  }
+  return [{ ...template, id: "codex", displayName: "Codex" }, ...base];
 }
 
 function executionOptionsResponse(): SystemExecutionOptionsResponse {
@@ -250,8 +264,14 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
-  it("keeps the selected built-in provider branded while models load", () => {
+  it("keeps the selected remembered provider branded while models load", () => {
     window.localStorage.setItem("bb.promptbox.provider", "codex");
+    // The app vendors no roster: the provider list this routing last
+    // reported is what paints the picker before the probe returns.
+    writeCachedProviderList(
+      providerListCacheKey({ environmentId: null, hostId: null }),
+      rememberedProviders(),
+    );
     vi.mocked(sdk.system.executionOptions).mockImplementation(
       () => new Promise(() => undefined),
     );
@@ -271,6 +291,10 @@ describe("useThreadCreationOptions", () => {
 
   it("does not switch away from a provider when its failed plugin response arrives", async () => {
     window.localStorage.setItem("bb.promptbox.provider", "codex");
+    writeCachedProviderList(
+      providerListCacheKey({ environmentId: null, hostId: null }),
+      rememberedProviders(),
+    );
     let resolveOptions: (
       value: SystemExecutionOptionsResponse,
     ) => void = () => {};
@@ -937,7 +961,7 @@ describe("useThreadCreationOptions", () => {
     });
   });
 
-  it("preloads Claude models and defers recovery until the probe lands", async () => {
+  it("keeps a stored model through a cold-cache probe and recovers only once it lands", async () => {
     let resolveOptions: (
       value: SystemExecutionOptionsResponse,
     ) => void = () => {};
@@ -960,21 +984,10 @@ describe("useThreadCreationOptions", () => {
       { wrapper },
     );
 
-    // The curated catalog renders before the host model probe returns, so the
-    // picker is usable immediately instead of empty for the probe's duration.
-    await waitFor(() => {
-      expect(result.current.modelOptions.map((option) => option.value)).toEqual(
-        [
-          "claude-fable-5",
-          "claude-opus-5[1m]",
-          "claude-opus-4-8[1m]",
-          "claude-opus-4-7[1m]",
-          "claude-sonnet-5",
-        ],
-      );
-    });
-    // A provisional catalog is never proof that the stored model was retired,
-    // so the selection must survive until the authoritative probe lands.
+    // No vendored catalog: the picker has no rows until the probe returns,
+    // and an empty pending list is never proof that the stored model was
+    // retired, so the selection survives.
+    expect(result.current.modelOptions).toEqual([]);
     expect(result.current.selectedModel).toBe("claude-mythos-5");
     expect(result.current.executionInputSources.model).toBeUndefined();
 

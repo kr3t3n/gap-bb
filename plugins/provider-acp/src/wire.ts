@@ -44,7 +44,8 @@ export function extractAcpContentText(
 // Tool calls
 // ---------------------------------------------------------------------------
 
-const acpToolKindSchema = z.enum([
+/** The ACP tool-call kind vocabulary; an absent kind reads as `other`. */
+export const acpToolKindSchema = z.enum([
   "read",
   "edit",
   "delete",
@@ -55,6 +56,7 @@ const acpToolKindSchema = z.enum([
   "fetch",
   "other",
 ]);
+export type AcpToolKind = z.infer<typeof acpToolKindSchema>;
 
 const acpToolCallStatusSchema = z.enum([
   "pending",
@@ -93,6 +95,15 @@ const acpToolCallLocationSchema = z
     line: z.number().optional().nullable(),
   })
   .passthrough();
+
+/**
+ * ACP has no exit-code field on tool calls. Agents that run shells report the
+ * real code inside `rawOutput` (cursor-agent: `{exitCode, stdout, stderr}`);
+ * this is the only field bb reads from that agent-defined payload.
+ */
+export const acpToolCallRawOutputExitCodeSchema = z.object({
+  exitCode: z.number().int(),
+});
 
 const acpToolCallFieldsSchema = z.object({
   toolCallId: z.string(),

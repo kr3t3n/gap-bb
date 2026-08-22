@@ -48,6 +48,13 @@ export const UPDATE_ENVIRONMENT_DIRECTORY_TOOL: DynamicTool = {
     required: ["path"],
     additionalProperties: false,
   },
+  presentation: {
+    label: {
+      pending: "Moving the thread directory",
+      completed: "Moved the thread directory",
+    },
+    icon: { glyph: "FolderOpen" },
+  },
 };
 
 interface HandleUpdateEnvironmentDirectoryToolCallArgs {

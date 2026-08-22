@@ -35,6 +35,13 @@ type PermissionGrantApprovalPayloadOptions = {
   availableDecisions?: PendingInteractionApprovalDecision[];
 };
 
+type ToolUseApprovalPayloadOptions = {
+  itemId?: string;
+  reason?: string | null;
+  tool?: string;
+  availableDecisions?: PendingInteractionApprovalDecision[];
+};
+
 type UserQuestionPayloadOptions = {
   allowFreeText?: boolean;
   multiSelect?: boolean;
@@ -119,6 +126,27 @@ export function createPermissionGrantApprovalPayload(
     },
     reason: options.reason ?? "Grant permission",
     availableDecisions: options.availableDecisions ?? defaultAvailableDecisions,
+  };
+}
+
+export function createToolUseApprovalPayload(
+  options: ToolUseApprovalPayloadOptions = {},
+): ApprovalPendingInteractionPayload {
+  return {
+    kind: "approval",
+    subject: {
+      kind: "tool_use",
+      itemId: options.itemId ?? "item-tool-use-approval",
+      tool: options.tool ?? "fetch",
+      presentation: {
+        label: { pending: "Fetching", completed: "Fetched" },
+        icon: { glyph: "Globe" },
+        title: "Fetch docs",
+      },
+    },
+    reason: options.reason ?? null,
+    availableDecisions:
+      options.availableDecisions ?? defaultBinaryAvailableDecisions,
   };
 }
 

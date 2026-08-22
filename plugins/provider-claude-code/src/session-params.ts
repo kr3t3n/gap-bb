@@ -317,5 +317,8 @@ export function buildClaudeTurnParams(
     memoryEnabled: providerOptions.memoryEnabled,
     providerSubagentsEnabled: providerOptions.providerSubagentsEnabled,
     permissionEscalation: args.options.permissionEscalation,
+    ...(providerOptions.claudeCodePermissionMode !== undefined
+      ? { claudeCodePermissionMode: providerOptions.claudeCodePermissionMode }
+      : {}),
   };
 }

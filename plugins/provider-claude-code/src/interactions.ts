@@ -41,7 +41,7 @@ import { claudeFileEditArgsSchema } from "./schemas.js";
 import {
   getClaudeFileEditPath,
   parseClaudeBashCommand,
-} from "./delta-translation.js";
+} from "./tool-classification.js";
 
 function hasClaudeSessionPermissionUpdate(
   args: ClaudePermissionRequestApprovalParams,
@@ -297,6 +297,12 @@ function getClaudePermissionUpdateToolName(
     // A plan verdict grants nothing, so it never reaches a session update.
     case "plan":
       return null;
+    // Unsupported until WS5: this bridge raises no tool_use subject yet, so a
+    // resolution for one can only be a wiring bug upstream.
+    case "tool_use":
+      throw new ProviderResponseEncodeError(
+        "tool_use approval subjects are not produced by the Claude bridge until WS5",
+      );
   }
 }
 

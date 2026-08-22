@@ -1,4 +1,4 @@
-import type { Host } from "@bb/domain";
+import type { Host, ProviderInfo } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import {
   buildPaletteOptions,
@@ -25,7 +25,7 @@ import {
   usageBarTone,
   usageHeading,
   usageWindowValue,
-  USAGE_PROVIDERS,
+  usageProviderConfigs,
   visibleUsageProviders,
 } from "./usage-limits-model";
 
@@ -183,14 +183,91 @@ describe("local preferences", () => {
 describe("usage limits model", () => {
   const NOW = Date.UTC(2026, 7, 19, 12, 0, 0);
 
+  const USAGE_PROVIDER_INFOS: ProviderInfo[] = [
+    {
+      id: "agent-a",
+      displayName: "Agent A",
+      logoUrl: null,
+      available: true,
+      experimental_providerHealth: true,
+      experimental_providerUsage: true,
+      experimental_providerInstallation: false,
+      capabilities: {
+        supportsThreadArchive: false,
+        supportsThreadRename: false,
+        supportsServiceTier: false,
+        supportsNativeUserQuestion: false,
+        supportsFork: false,
+        supportsSessionRewind: false,
+        permissionModes: ["full"],
+      },
+      composerActions: [],
+      strings: {
+        signInHint: "Run `agent-a login`.",
+        expiredHint: "Agent A expired.",
+        installUrl: "https://example.com/a",
+      },
+    },
+    {
+      id: "agent-b",
+      displayName: "Agent B",
+      logoUrl: null,
+      available: true,
+      experimental_providerHealth: true,
+      experimental_providerUsage: true,
+      experimental_providerInstallation: false,
+      capabilities: {
+        supportsThreadArchive: false,
+        supportsThreadRename: false,
+        supportsServiceTier: false,
+        supportsNativeUserQuestion: false,
+        supportsFork: false,
+        supportsSessionRewind: false,
+        permissionModes: ["full"],
+      },
+      composerActions: [],
+    },
+    {
+      id: "no-usage",
+      displayName: "No Usage",
+      logoUrl: null,
+      available: true,
+      experimental_providerHealth: true,
+      experimental_providerUsage: false,
+      experimental_providerInstallation: false,
+      capabilities: {
+        supportsThreadArchive: false,
+        supportsThreadRename: false,
+        supportsServiceTier: false,
+        supportsNativeUserQuestion: false,
+        supportsFork: false,
+        supportsSessionRewind: false,
+        permissionModes: ["full"],
+      },
+      composerActions: [],
+    },
+  ];
+
+  it("builds usage rows from the provider list, keyed by provider id", () => {
+    const configs = usageProviderConfigs(USAGE_PROVIDER_INFOS);
+    expect(configs.map((config) => config.providerId)).toEqual([
+      "agent-a",
+      "agent-b",
+    ]);
+    // Declared strings win; a provider without them gets generic copy.
+    expect(configs[0]?.signInHint).toBe("Run `agent-a login`.");
+    expect(configs[1]?.signInHint).toContain("Agent B");
+  });
+
   it("hides providers whose CLI is not installed", () => {
+    const configs = usageProviderConfigs(USAGE_PROVIDER_INFOS);
     expect(
-      visibleUsageProviders({
-        codex: { status: "not_installed" },
-        claudeCode: { status: "unauthenticated" },
-      }).map((p) => p.key),
-    ).toEqual(["claudeCode", "cursor"]);
-    expect(visibleUsageProviders({})).toHaveLength(USAGE_PROVIDERS.length);
+      visibleUsageProviders(configs, {
+        "agent-a": { status: "not_installed" },
+        "agent-b": { status: "unauthenticated" },
+      }).map((config) => config.providerId),
+    ).toEqual(["agent-b"]);
+    expect(visibleUsageProviders(configs, {})).toHaveLength(configs.length);
   });
 
   it("tones the bar at 80 / 95 percent", () => {
@@ -237,7 +314,7 @@ describe("usage limits model", () => {
   });
 
   it("picks the body per status", () => {
-    const config = USAGE_PROVIDERS[0]!;
+    const config = usageProviderConfigs(USAGE_PROVIDER_INFOS)[0]!;
     expect(
       describeUsageBody({
         config,

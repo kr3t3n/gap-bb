@@ -396,6 +396,22 @@ function buildApprovalSubject({
         ),
       };
     }
+    case "tool_use": {
+      // The ACP bridge raises this for generic tool permissions; the subject's
+      // presentation is the banner's base until WS5 designs the tool-use surface.
+      const detailLines =
+        formatPendingInteractionSubjectDetailLines(interaction);
+      return {
+        title: payload.reason ?? payload.subject.presentation.label.pending,
+        body:
+          detailLines.length > 0 ? (
+            <ApprovalDetailList
+              className="rounded-lg border border-border bg-card px-3 py-2"
+              lines={detailLines}
+            />
+          ) : null,
+      };
+    }
     default:
       return assertNever(payload.subject);
   }

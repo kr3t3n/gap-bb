@@ -6,7 +6,13 @@ import {
 
 interface PromptModeInput {
   mentionRanges: readonly PromptTextMention[];
-  providerId: string | undefined;
+  /**
+   * The selected provider's declared `strings.planModeCopy`, or undefined
+   * when it declares none (or no provider is selected). Plan mode changes
+   * the permission display only for a provider that says so: the copy is the
+   * declaration, so no provider is named here.
+   */
+  planModeCopy: string | undefined;
   value: string;
 }
 
@@ -17,19 +23,21 @@ interface PermissionDisplayOverride {
   title?: string;
 }
 
-const CLAUDE_PLAN_PERMISSION_DISPLAY: PermissionDisplayOverride = {
-  label: "Plan Mode",
-  compactLabel: "Plan",
-  description: "Claude Code will plan without normal full-access execution.",
-};
+function planPermissionDisplay(planModeCopy: string): PermissionDisplayOverride {
+  return {
+    label: "Plan Mode",
+    compactLabel: "Plan",
+    description: planModeCopy,
+  };
+}
 
-export function isClaudePlanModePrompt({
+export function isPlanModePrompt({
   mentionRanges,
-  providerId,
+  planModeCopy,
   value,
 }: PromptModeInput): boolean {
   return (
-    providerId === "claude-code" &&
+    planModeCopy !== undefined &&
     promptInputHasCommandMention(
       [{ type: "text", text: value, mentions: [...mentionRanges] }],
       { trigger: "/", name: "plan" },
@@ -40,20 +48,18 @@ export function isClaudePlanModePrompt({
 export function permissionDisplayForPromptMode(
   args: PromptModeInput,
 ): PermissionDisplayOverride | undefined {
-  if (!isClaudePlanModePrompt(args)) {
+  if (args.planModeCopy === undefined || !isPlanModePrompt(args)) {
     return undefined;
   }
-  return CLAUDE_PLAN_PERMISSION_DISPLAY;
+  return planPermissionDisplay(args.planModeCopy);
 }
 
 export function permissionDisplayForActivePromptMode(
   activePromptMode: ThreadTimelineActivePromptMode | null | undefined,
+  planModeCopy: string | undefined,
 ): PermissionDisplayOverride | undefined {
-  if (
-    activePromptMode?.mode === "plan" &&
-    activePromptMode.providerId === "claude-code"
-  ) {
-    return CLAUDE_PLAN_PERMISSION_DISPLAY;
+  if (activePromptMode?.mode === "plan" && planModeCopy !== undefined) {
+    return planPermissionDisplay(planModeCopy);
   }
   return undefined;
 }

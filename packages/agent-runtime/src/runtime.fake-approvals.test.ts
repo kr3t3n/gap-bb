@@ -8,19 +8,20 @@ import type {
   ThreadEvent,
 } from "@bb/domain";
 import { promptTextInput } from "./test/prompt-input.js";
-import { createAgentRuntimeWithAdapters } from "./runtime.js";
-import { createFakeAdapter } from "./test/fake-adapter.js";
 import {
+  createScriptedEchoRuntime,
   fullRuntimeOptions,
   waitForThreadAgentMessageText,
   waitForThreadTurnCompleted,
+  waitForThreadTurnStarted,
 } from "./test/runtime-test-harness.js";
 
-// The `approve:<kind>` control token is the deterministic approval path the
-// mobile e2e flows drive against the fake provider. These tests pin the
-// request the runtime hands to `onInteractiveRequest` and the two ways the
-// fake turn resumes afterwards.
-describe("fake provider approve:<kind> control token", () => {
+// The `approve:<kind>` directive is the deterministic approval path the
+// mobile e2e flows drive against the scripted echo provider. These tests pin
+// the request the runtime hands to `onInteractiveRequest` — decoded from the
+// bridge's `interaction/request`, its provider-native turn id mapped through
+// the assembler — and the two ways the scripted turn resumes afterwards.
+describe("scripted echo provider approve:<kind> directive", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -39,22 +40,20 @@ describe("fake provider approve:<kind> control token", () => {
   }): Promise<{
     events: ThreadEvent[];
     requests: PendingInteractionCreate[];
+    turnId: string;
     shutdown: () => Promise<void>;
   }> {
     const events: ThreadEvent[] = [];
     const requests: PendingInteractionCreate[] = [];
-    const runtime = createAgentRuntimeWithAdapters({
-      workspacePath: tmpDir,
-      onEvent: (event) => events.push(event),
-      onToolCall: async () => ({
-        contentItems: [{ type: "inputText", text: "ok" }],
-        success: true,
-      }),
-      onInteractiveRequest: async (request) => {
-        requests.push(request);
-        return args.resolve(request);
+    const runtime = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath: tmpDir,
+        onEvent: (event) => events.push(event),
+        onInteractiveRequest: async (request) => {
+          requests.push(request);
+          return args.resolve(request);
+        },
       },
-      adapterFactory: () => createFakeAdapter(),
     });
 
     await runtime.startThread({
@@ -70,6 +69,12 @@ describe("fake provider approve:<kind> control token", () => {
       input: [promptTextInput({ text: args.prompt })],
       options: fullRuntimeOptions,
     });
+    const { turnId } = await waitForThreadTurnStarted({
+      events,
+      providerId: "fake",
+      runtime,
+      threadId: "t1",
+    });
     await waitForThreadTurnCompleted({
       events,
       providerId: "fake",
@@ -77,19 +82,27 @@ describe("fake provider approve:<kind> control token", () => {
       threadId: "t1",
     });
 
-    return { events, requests, shutdown: () => runtime.shutdown() };
+    return {
+      events,
+      requests,
+      turnId,
+      shutdown: () => runtime.shutdown(),
+    };
   }
 
   it("emits a command approval and echoes the response after allow_once", async () => {
-    const { events, requests, shutdown } = await runApprovalTurn({
+    const { events, requests, turnId, shutdown } = await runApprovalTurn({
       prompt: "approve:command hello",
       resolve: () => ({ decision: "allow_once", grantedPermissions: null }),
     });
 
     expect(requests).toHaveLength(1);
+    // The bridge named its own turn (`turn-1`); the request reaches the app
+    // under the assembler-minted id the timeline carries.
+    expect(turnId).not.toBe("turn-1");
     expect(requests[0]).toMatchObject({
       threadId: "t1",
-      turnId: "turn-1",
+      turnId,
       providerId: "fake",
       providerThreadId: "prov-1",
       payload: {

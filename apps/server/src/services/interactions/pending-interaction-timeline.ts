@@ -41,7 +41,7 @@ type ApprovalTimelineItem = Extract<
  */
 type ApprovalTimelineItemSubject = Exclude<
   PendingInteractionApprovalSubject,
-  { kind: "permission_grant" } | { kind: "plan" }
+  { kind: "permission_grant" } | { kind: "plan" } | { kind: "tool_use" }
 >;
 type ApprovalTimelineItemStatus = Extract<
   ApprovalTimelineItem["status"],
@@ -444,6 +444,12 @@ export function appendPendingInteractionTimelineEvent(
     // duplicate it.
     case "plan":
       return;
+    // A tool-use approval has no timeline item of its own: the provider's own
+    // tool call (the ACP agent's tool_call with the same id) is the timeline
+    // record, and the banner renders the subject's presentation. The single
+    // interaction-lifecycle event it will ride is WS5's (interactions).
+    case "tool_use":
+      return;
     default:
       return assertNever(subject, "Unsupported approval subject for timeline");
   }
@@ -497,6 +503,10 @@ export function appendPendingInteractionTimelineEventInTransaction(
     // See appendPendingInteractionTimelineEvent: the ExitPlanMode tool call is
     // already the timeline record.
     case "plan":
+      return;
+    // See appendPendingInteractionTimelineEvent: the provider's own tool call
+    // is the timeline record.
+    case "tool_use":
       return;
     default:
       return assertNever(subject, "Unsupported approval subject for timeline");

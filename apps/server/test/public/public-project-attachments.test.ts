@@ -139,6 +139,72 @@ describe("public project attachments", () => {
     });
   });
 
+  it("rejects HEIC/HEIF image uploads instead of storing an image nothing can render", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-project-attachment-heic",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      // ISO BMFF `ftyp` box with the `heic` brand, as an iPhone photo starts.
+      const heicBytes = new Uint8Array([
+        0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63,
+        0x00, 0x00, 0x00, 0x00, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63,
+      ]);
+      const rejected = {
+        code: "invalid_request",
+        message:
+          "HEIC images are not supported. Convert the image to JPEG or PNG before attaching it.",
+      };
+
+      // Chromium labels a dropped or pasted .heic file `image/heic`, and the
+      // CLI infers the same from the extension.
+      const heic = await upload(
+        harness.app,
+        project.id,
+        new File([heicBytes], "IMG_0001.heic", { type: "image/heic" }),
+      );
+      expect(heic.status).toBe(400);
+      await expect(readJson(heic)).resolves.toEqual(rejected);
+
+      const heif = await upload(
+        harness.app,
+        project.id,
+        new File([heicBytes], "IMG_0002.HEIF", {
+          type: "Image/HEIF; charset=binary",
+        }),
+      );
+      expect(heif.status).toBe(400);
+      await expect(readJson(heif)).resolves.toEqual(rejected);
+
+      // Only the image classification is broken. The same bytes sent as a
+      // non-image (`bb project attachment upload photo.heic --mime-type
+      // application/octet-stream`) still store as a plain file chip that an
+      // agent can convert on the host.
+      const asFile = await upload(
+        harness.app,
+        project.id,
+        new File([heicBytes], "IMG_0003.heic", {
+          type: "application/octet-stream",
+        }),
+      );
+      expect(asFile.status).toBe(201);
+      expect(
+        uploadedPromptAttachmentSchema.parse(await readJson(asFile)),
+      ).toMatchObject({ type: "localFile", name: "IMG_0003.heic" });
+
+      const stillAcceptsOtherImages = await upload(
+        harness.app,
+        project.id,
+        new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "ok.png", {
+          type: "image/png",
+        }),
+      );
+      expect(stillAcceptsOtherImages.status).toBe(201);
+    });
+  });
+
   it("keeps attachment read tokens scoped to their owning project", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {

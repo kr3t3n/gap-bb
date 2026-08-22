@@ -42,6 +42,8 @@ function pendingInteractionBlockerLabel(
       return "permission grant";
     case "plan":
       return "plan review";
+    case "tool_use":
+      return "tool-use approval";
     default: {
       const exhaustiveCheck: never = interaction.payload.subject;
       return exhaustiveCheck;

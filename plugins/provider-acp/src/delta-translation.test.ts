@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { threadScope, turnScope, type ThreadEvent } from "@bb/domain";
 import type { ProviderRuntimeEvent } from "@bb/provider-bridge-protocol/bridge-kit";
-import {
-  createDeltaAssembler,
-  type DeltaAssembler,
-} from "@bb/agent-runtime/test/bridge-delta-assembly";
+import { experimental_createDeltaAssembler as createDeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type { DeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import {
   ACP_COMPACTION_COMPLETED_METHOD,
   ACP_COMPACTION_STARTED_METHOD,
@@ -14,7 +12,10 @@ import {
   ACP_UPDATE_METHOD,
   ACP_WARNING_METHOD,
 } from "./bridge-protocol.js";
-import { createAcpDeltaTranslator } from "./delta-translation.js";
+import {
+  createAcpDeltaTranslator,
+  type AcpDeltaTranslator,
+} from "./delta-translation.js";
 
 /**
  * ACP translation equivalence for the narrow-grammar path.
@@ -514,6 +515,11 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
           cwd: "",
           status: "pending",
           approvalStatus: null,
+          presentation: {
+            label: { pending: "Running command", completed: "Ran command" },
+            icon: { glyph: "Terminal" },
+            title: "pnpm test",
+          },
         },
       },
     ]);
@@ -545,10 +551,106 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
           status: "completed",
           approvalStatus: null,
           aggregatedOutput: "1 passed",
-          exitCode: 0,
+          presentation: {
+            label: { pending: "Running command", completed: "Ran command" },
+            icon: { glyph: "Terminal" },
+            title: "pnpm test",
+          },
         },
       },
     ]);
+  });
+
+  // Issue #1529: ACP's tool_call_update has no exit-code field and Cursor
+  // reports both "exited 1" and "never ran" (spawn ENOENT after the
+  // persistent shell's cwd was deleted) as `status: "completed"`, so the
+  // status alone must never become an exit code. The real code, when the
+  // agent has one, rides in `rawOutput.exitCode` (shapes recorded from
+  // `cursor-agent acp` 2026.08.11).
+  describe("command exit codes", () => {
+    function completeCommand(
+      harness: AcpEquivalenceHarness,
+      toolCallId: string,
+      command: string,
+      update: Record<string, unknown>,
+    ) {
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId,
+          title: `\`${command}\``,
+          kind: "execute",
+          status: "pending",
+          rawInput: { command },
+        }),
+      );
+      const items = completedItems(
+        harness.translate(
+          updateEvent({
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            ...update,
+          }),
+        ),
+      );
+      expect(items).toHaveLength(1);
+      const item = items[0];
+      if (item?.type !== "commandExecution") {
+        throw new Error(`expected a commandExecution, got ${item?.type}`);
+      }
+      return item;
+    }
+
+    it("uses rawOutput.exitCode when the agent reports a non-zero exit as completed", () => {
+      const item = completeCommand(startedHarness(), "call-false", "false", {
+        status: "completed",
+        rawOutput: { exitCode: 1, stdout: "", stderr: "" },
+      });
+      expect(item.status).toBe("completed");
+      expect(item.exitCode).toBe(1);
+    });
+
+    it("omits the exit code when a completed call carries no result at all", () => {
+      const item = completeCommand(
+        startedHarness(),
+        "call-8d1faebb\nfc_366d93fb_0",
+        "echo hi; git status",
+        { status: "completed" },
+      );
+      expect(item.status).toBe("completed");
+      expect(item.aggregatedOutput).toBeUndefined();
+      expect(item.exitCode).toBeUndefined();
+    });
+
+    it("keeps exit code 1 for failed calls without a reported exit code", () => {
+      const item = completeCommand(startedHarness(), "call-failed", "boom", {
+        status: "failed",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "boom: not found" },
+          },
+        ],
+      });
+      expect(item.status).toBe("failed");
+      expect(item.exitCode).toBe(1);
+    });
+
+    it("prefers a reported exit code over the failed-status fallback", () => {
+      const item = completeCommand(startedHarness(), "call-127", "nope", {
+        status: "failed",
+        rawOutput: { exitCode: 127, stdout: "", stderr: "nope: not found" },
+      });
+      expect(item.exitCode).toBe(127);
+    });
+
+    it("ignores non-integer exit codes in rawOutput", () => {
+      const item = completeCommand(startedHarness(), "call-str", "true", {
+        status: "completed",
+        rawOutput: { exitCode: "0", stdout: "ok" },
+      });
+      expect(item.exitCode).toBeUndefined();
+    });
   });
 
   it("summarizes inline image attachments from raw tool output", () => {
@@ -651,6 +753,11 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
           changes: [{ path: "/workspace/a.ts", kind: "update" }],
           status: "pending",
           approvalStatus: null,
+          presentation: {
+            label: { pending: "Editing file", completed: "Edited file" },
+            icon: { glyph: "EditFile" },
+            title: "a.ts",
+          },
         },
       },
     ]);
@@ -692,32 +799,56 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
     expect(countChangedLines(change?.diff)).toEqual({ added: 1, removed: 1 });
   });
 
-  it("translates plan updates", () => {
+  it("translates plan updates into settled planSteps snapshots", () => {
     const harness = startedHarness();
-    expect(
-      harness.translate(
-        updateEvent({
-          sessionUpdate: "plan",
-          entries: [
-            { content: "Read files", status: "completed" },
-            { content: "Fix bug", status: "in_progress" },
-            { content: "Run tests", status: "pending" },
-          ],
-        }),
-      ),
-    ).toEqual([
+    const first = harness.translate(
+      updateEvent({
+        sessionUpdate: "plan",
+        entries: [
+          { content: "Read files", status: "completed" },
+          { content: "Fix bug", status: "in_progress" },
+          { content: "Run tests", status: "pending" },
+        ],
+      }),
+    );
+    expect(first).toEqual([
       {
-        type: "turn/plan/updated",
+        type: "item/completed",
         threadId: "",
         providerThreadId: "",
         scope: turnScope(harness.openTurnId()),
-        plan: [
-          { step: "Read files", status: "completed" },
-          { step: "Fix bug", status: "active" },
-          { step: "Run tests", status: "pending" },
-        ],
+        item: {
+          type: "planSteps",
+          id: expect.stringMatching(ITEM_ID_PATTERN),
+          steps: [
+            { step: "Read files", status: "completed" },
+            { step: "Fix bug", status: "active" },
+            { step: "Run tests", status: "pending" },
+          ],
+          status: "completed",
+          presentation: {
+            label: { pending: "Updating plan", completed: "Updated plan" },
+            icon: { glyph: "ListTodo" },
+            suppress: true,
+            title: "Fix bug",
+          },
+        },
       },
     ]);
+    // Each snapshot is its own item; the latest supersedes the rest.
+    const second = completedItems(
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "plan",
+          entries: [{ content: "Run tests", status: "in_progress" }],
+        }),
+      ),
+    );
+    expect(second).toHaveLength(1);
+    expect(second[0]?.id).not.toBe(completedItems(first)[0]?.id);
+    expect(first.some((event) => event.type === "turn/plan/updated")).toBe(
+      false,
+    );
   });
 
   it("translates bridge warnings", () => {
@@ -822,5 +953,495 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
     ).toMatchObject([
       { type: "provider/unhandled", rawType: "acp/update:totally_new_update" },
     ]);
+  });
+});
+
+/**
+ * Grammar v3: every item the bridge opens or closes carries its presentation
+ * (docs/provider-plugin-api.md §3), asserted on the deltas themselves so a
+ * new lifecycle site cannot ship without one.
+ */
+describe("acp delta translation (presentation)", () => {
+  function itemDeltas(
+    deltas: ReturnType<AcpDeltaTranslator["translateAcpEvent"]>,
+  ) {
+    return deltas.filter(
+      (delta) => delta.kind === "item.open" || delta.kind === "item.close",
+    );
+  }
+
+  it("attaches a presentation to every item.open and item.close", () => {
+    const translator = createAcpDeltaTranslator();
+    const context = { threadId: THREAD_ID };
+    const translate = (event: ProviderRuntimeEvent) =>
+      translator.translateAcpEvent(event, context);
+
+    translate(turnStartedEvent());
+    const lifecycle = [
+      ...translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-exec",
+          title: "`pnpm test`",
+          kind: "execute",
+          status: "pending",
+          rawInput: { command: "pnpm test" },
+        }),
+      ),
+      ...translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-read",
+          title: "Read File",
+          kind: "read",
+          status: "in_progress",
+        }),
+      ),
+      ...translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-mcp",
+          title: "MCP: tool",
+          kind: "other",
+          status: "completed",
+        }),
+      ),
+      ...translate(
+        updateEvent({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-exec",
+          status: "completed",
+        }),
+      ),
+      ...translate(fsWriteEvent("/tmp/new.ts")),
+      // Turn end settles the still-open read.
+      ...translate(turnCompletedEvent("end_turn")),
+      ...translate({
+        jsonrpc: "2.0",
+        method: ACP_COMPACTION_STARTED_METHOD,
+        params: { threadId: THREAD_ID },
+      }),
+    ];
+
+    const items = itemDeltas(lifecycle);
+    expect(items.map((delta) => delta.kind)).toEqual([
+      "item.open",
+      "item.open",
+      "item.close",
+      "item.close",
+      "item.close",
+      "item.close",
+      "item.open",
+    ]);
+    for (const delta of items) {
+      expect(delta.presentation).toBeDefined();
+    }
+    expect(items.map((delta) => delta.presentation)).toEqual([
+      {
+        label: { pending: "Running command", completed: "Ran command" },
+        icon: { glyph: "Terminal" },
+        title: "pnpm test",
+      },
+      {
+        label: { pending: "Reading file", completed: "Read file" },
+        icon: { glyph: "FileText" },
+        title: "Read File",
+      },
+      {
+        label: { pending: "Running tool", completed: "Ran tool" },
+        icon: { glyph: "Toolbox" },
+        title: "MCP: tool",
+      },
+      {
+        label: { pending: "Running command", completed: "Ran command" },
+        icon: { glyph: "Terminal" },
+        title: "pnpm test",
+      },
+      {
+        label: { pending: "Writing file", completed: "Wrote file" },
+        icon: { glyph: "EditFile" },
+        title: "new.ts",
+      },
+      {
+        label: { pending: "Reading file", completed: "Read file" },
+        icon: { glyph: "FileText" },
+        title: "Read File",
+      },
+      {
+        label: {
+          pending: "Compacting context",
+          completed: "Compacted context",
+        },
+        icon: { glyph: "Archive" },
+      },
+    ]);
+  });
+
+  it("strips the agent's code ticks from a command headline and names deleted files", () => {
+    const translator = createAcpDeltaTranslator();
+    const context = { threadId: THREAD_ID };
+    translator.translateAcpEvent(turnStartedEvent(), context);
+    const [command] = itemDeltas(
+      translator.translateAcpEvent(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-title",
+          title: "`touch approved.txt`",
+          kind: "execute",
+          status: "pending",
+        }),
+        context,
+      ),
+    );
+    expect(command?.presentation?.title).toBe("touch approved.txt");
+
+    const [deletion] = itemDeltas(
+      translator.translateAcpEvent(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-delete",
+          title: "Delete old.ts",
+          kind: "delete",
+          status: "completed",
+          locations: [{ path: "/workspace/old.ts" }],
+        }),
+        context,
+      ),
+    );
+    expect(deletion?.presentation).toEqual({
+      label: { pending: "Deleting file", completed: "Deleted file" },
+      icon: { glyph: "Trash2" },
+      title: "old.ts",
+    });
+  });
+});
+
+/**
+ * The native kind enum maps straight onto the core kinds; the agent's title
+ * is the headline, never the tool name. A kind whose core shape the agent
+ * left unfilled stays a generic tool presenting as its kind.
+ */
+describe("acp delta translation (native kinds → core kinds)", () => {
+  function openItem(update: Record<string, unknown>) {
+    const harness = createHarness();
+    harness.translate(turnStartedEvent());
+    const events = harness.translate(
+      updateEvent({ sessionUpdate: "tool_call", status: "pending", ...update }),
+    );
+    const started = events.find((event) => event.type === "item/started");
+    if (started?.type !== "item/started") {
+      throw new Error(
+        `Expected an item/started, got ${JSON.stringify(events)}`,
+      );
+    }
+    return started.item;
+  }
+
+  it("maps a read with a location to fileRead", () => {
+    expect(
+      openItem({
+        toolCallId: "read-1",
+        title: "Read File",
+        kind: "read",
+        locations: [{ path: "/workspace/src/a.ts", line: 3 }],
+      }),
+    ).toMatchObject({
+      type: "fileRead",
+      path: "/workspace/src/a.ts",
+      presentation: {
+        label: { pending: "Reading file", completed: "Read file" },
+        icon: { glyph: "FileText" },
+        title: "a.ts",
+      },
+    });
+  });
+
+  it("recovers the read path from a single code-ticked title token", () => {
+    expect(
+      openItem({
+        toolCallId: "read-2",
+        title: "Read `/home/user/project/README.md`",
+        kind: "read",
+        rawInput: {},
+      }),
+    ).toMatchObject({ type: "fileRead", path: "/home/user/project/README.md" });
+  });
+
+  it("keeps a read with no path a generic tool that presents as a read", () => {
+    expect(
+      openItem({
+        toolCallId: "read-3",
+        title: "Read File",
+        kind: "read",
+        rawInput: {},
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        type: "toolCall",
+        tool: "read",
+        presentation: {
+          label: { pending: "Reading file", completed: "Read file" },
+          icon: { glyph: "FileText" },
+          title: "Read File",
+        },
+      }),
+    );
+  });
+
+  it("maps a fetch to webFetch when the URL is known", () => {
+    expect(
+      openItem({
+        toolCallId: "fetch-1",
+        title: "Fetch: https://example.com/docs",
+        kind: "fetch",
+      }),
+    ).toMatchObject({
+      type: "webFetch",
+      url: "https://example.com/docs",
+      pattern: null,
+      presentation: {
+        label: { pending: "Fetching page", completed: "Fetched page" },
+        title: "https://example.com/docs",
+      },
+    });
+    expect(
+      openItem({ toolCallId: "fetch-2", title: "Web Fetch", kind: "fetch" }),
+    ).toMatchObject({
+      type: "toolCall",
+      tool: "fetch",
+      presentation: { label: { pending: "Fetching" }, title: "Web Fetch" },
+    });
+  });
+
+  it("maps a search with a query to the search kind", () => {
+    expect(
+      openItem({
+        toolCallId: "search-1",
+        title: "Grep",
+        kind: "search",
+        rawInput: { pattern: "TODO", path: "/workspace/src" },
+      }),
+    ).toMatchObject({
+      type: "search",
+      mode: "content",
+      query: "TODO",
+      path: "/workspace/src",
+      presentation: { label: { completed: "Searched files" }, title: "TODO" },
+    });
+    expect(
+      openItem({
+        toolCallId: "search-2",
+        title: "Find",
+        kind: "search",
+        rawInput: { glob: "**/*.test.ts" },
+      }),
+    ).toMatchObject({ type: "search", mode: "path", query: "**/*.test.ts" });
+    expect(
+      openItem({ toolCallId: "search-3", title: "Find", kind: "search" }),
+    ).toMatchObject({ type: "toolCall", tool: "search" });
+  });
+
+  it("maps a think call to a reasoning item with its thought", () => {
+    const harness = createHarness();
+    harness.translate(turnStartedEvent());
+    harness.translate(
+      updateEvent({
+        sessionUpdate: "tool_call",
+        toolCallId: "think-1",
+        title: "Thinking",
+        kind: "think",
+        status: "in_progress",
+      }),
+    );
+    const [settled] = completedItems(
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "think-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: "Plan: A then B" },
+            },
+          ],
+        }),
+      ),
+    );
+    expect(settled).toMatchObject({
+      type: "reasoning",
+      summary: [],
+      content: ["Plan: A then B"],
+      presentation: { label: { pending: "Thinking", completed: "Thought" } },
+    });
+  });
+
+  it("names a generic call by its kind and keeps the title as the headline", () => {
+    expect(
+      openItem({ toolCallId: "other-1", title: "MCP: tool", kind: "other" }),
+    ).toEqual(
+      expect.objectContaining({
+        type: "toolCall",
+        tool: "other",
+        presentation: {
+          label: { pending: "Running tool", completed: "Ran tool" },
+          icon: { glyph: "Toolbox" },
+          title: "MCP: tool",
+        },
+      }),
+    );
+    expect(
+      openItem({ toolCallId: "other-2", title: "Task: Subagent task" }),
+    ).toMatchObject({ type: "toolCall", tool: "tool" });
+  });
+});
+
+/**
+ * Q31: a call to a bb-injected tool reads as that tool (`server: "bb"`, the
+ * definition's presentation). ACP gives the bridge no id linking the MCP
+ * proxy's call to the agent's own tool_call, so the binding is positional.
+ */
+describe("acp delta translation (bb-injected tools)", () => {
+  const ASK_PRESENTATION = {
+    label: { pending: "Asking a question", completed: "Asked a question" },
+    icon: { glyph: "MessageQuestion" },
+    suppress: true,
+  };
+
+  function injectedHarness() {
+    const harness = createHarness();
+    const translator = createAcpDeltaTranslator();
+    translator.configureInjectedTools([
+      { name: "ask_user_question", presentation: ASK_PRESENTATION },
+      { name: "bb_workflow_run" },
+    ]);
+    const assembler = harness.assembler;
+    const translate = (event: ProviderRuntimeEvent) =>
+      assembler.assemble({
+        threadId: THREAD_ID,
+        deltas: translator.translateAcpEvent(event, { threadId: THREAD_ID }),
+      });
+    translate(turnStartedEvent());
+    return { translate, translator };
+  }
+
+  it("binds the agent's announced MCP call when the proxy forwards the bb tool call", () => {
+    const { translate, translator } = injectedHarness();
+    // Cursor's order: the generic announcement first, then the MCP request
+    // reaches the proxy, then the agent settles its call.
+    const [started] = translate(
+      updateEvent({
+        sessionUpdate: "tool_call",
+        toolCallId: "mcp-1",
+        title: "MCP: tool",
+        kind: "other",
+        status: "pending",
+      }),
+    );
+    expect(started).toMatchObject({
+      type: "item/started",
+      item: { type: "toolCall", tool: "other" },
+    });
+
+    translator.noteInjectedToolCall(THREAD_ID, "ask_user_question");
+
+    const [completed] = completedItems(
+      translate(
+        updateEvent({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "mcp-1",
+          status: "completed",
+        }),
+      ),
+    );
+    expect(completed).toMatchObject({
+      type: "toolCall",
+      server: "bb",
+      tool: "ask_user_question",
+      status: "completed",
+      presentation: ASK_PRESENTATION,
+    });
+  });
+
+  it("holds a proxied call until the agent announces it, and presents an unknown definition generically", () => {
+    const { translate, translator } = injectedHarness();
+    translator.noteInjectedToolCall(THREAD_ID, "bb_workflow_run");
+    translator.noteInjectedToolCall(THREAD_ID, "not_configured");
+
+    const first = completedItems(
+      translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "mcp-2",
+          title: "tool",
+          status: "completed",
+        }),
+      ),
+    );
+    expect(first[0]).toMatchObject({
+      type: "toolCall",
+      server: "bb",
+      tool: "bb_workflow_run",
+      presentation: {
+        label: {
+          pending: "Running bb_workflow_run",
+          completed: "Ran bb_workflow_run",
+        },
+        icon: { glyph: "Toolbox" },
+      },
+    });
+    const second = completedItems(
+      translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "mcp-3",
+          title: "tool",
+          kind: "other",
+          status: "completed",
+        }),
+      ),
+    );
+    expect(second[0]).toMatchObject({
+      type: "toolCall",
+      server: "bb",
+      tool: "not_configured",
+    });
+  });
+
+  it("binds by name when the title names the tool, and never binds a command", () => {
+    const { translate, translator } = injectedHarness();
+    translate(
+      updateEvent({
+        sessionUpdate: "tool_call",
+        toolCallId: "exec-1",
+        title: "`sleep 1`",
+        kind: "execute",
+        status: "pending",
+        rawInput: { command: "sleep 1" },
+      }),
+    );
+    const [named] = translate(
+      updateEvent({
+        sessionUpdate: "tool_call",
+        toolCallId: "mcp-4",
+        title: "ask_user_question (bb-bridge MCP Server)",
+        kind: "other",
+        status: "pending",
+      }),
+    );
+    expect(named).toMatchObject({
+      type: "item/started",
+      item: { type: "toolCall", server: "bb", tool: "ask_user_question" },
+    });
+
+    // A proxied call with only a command open waits; it never rebinds the
+    // command or the already-bound question.
+    translator.noteInjectedToolCall(THREAD_ID, "bb_workflow_run");
+    const settled = completedItems(translate(turnCompletedEvent("end_turn")));
+    expect(settled.map((item) => item.type)).toEqual([
+      "commandExecution",
+      "toolCall",
+    ]);
+    expect(settled[1]).toMatchObject({ tool: "ask_user_question" });
   });
 });

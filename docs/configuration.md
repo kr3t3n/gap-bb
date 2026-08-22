@@ -143,6 +143,14 @@ By default, helper inference and voice transcription use Codex credentials from
 the host daemon. Run `codex login` on the host for the default path. Set
 provider env keys only when opting into a non-Codex provider route.
 
+With a ChatGPT subscription login, `codex/` voice transcription posts to a
+`chatgpt.com` endpoint that sits behind Cloudflare bot protection. On some
+networks Cloudflare challenges that request; bb retries, then reports
+"Voice transcription is temporarily unavailable" and logs the Cloudflare
+challenge on the server. If that happens often, route transcription through an
+API key instead: `codex login --with-api-key`, or set `BB_TRANSCRIPTION` to
+`openai/gpt-transcribe` with `OPENAI_API_KEY`.
+
 The microphone picker in Settings → Voice Input is client-local. It stores the
 selected browser `MediaDevices` device id in localStorage as
 `bb.voiceInput.audioInputDeviceId`; it does not change `bb-app config` or the
@@ -188,13 +196,35 @@ and falls back to the provider default; the next send records that default, so
 select the custom model again after you turn streamer mode off. Set it with
 `bb settings general streamerMode <true|false>`.
 
-Outside an open typeahead menu, Shift+Enter inserts a newline. In zen mode,
-unmodified Enter also inserts a newline. On coarse-pointer touch devices, the
-software-keyboard Return path inserts a newline and the submit button sends.
+Settings → Providers lists every registered agent provider in picker order.
+Move a provider up or down to change the order and choose the default for new
+threads. Both are persisted preferences: `providerOrder` is the list of ids
+that lead the picker (ids not listed follow in plugin install order, and an id
+that names no registered provider is ignored) and `defaultProviderId` is the
+provider new threads use when neither the caller nor the project chose one
+(`null` means the first available provider in picker order). Set them with
+`bb settings general providerOrder '["claude-code","codex"]'` and
+`bb settings general defaultProviderId claude-code` (or `null`).
+
+Each provider's own options live on its plugin: Codex memory and native
+subagents under the Codex provider plugin, Claude Code memory, native
+subagents and the Workflow tool under the Claude Code provider plugin. Read
+and set them like any plugin setting, for example
+`bb plugin config provider-claude-code set workflowsDisabled true`.
+
+Outside an open typeahead menu, Shift+Enter inserts a newline. On
+coarse-pointer touch devices, the software-keyboard Return path inserts a
+newline and the submit button sends.
 iPadOS WebKit additionally preserves the Enter and Command+Enter shortcuts
 above for a connected Magic Keyboard.
 
 ## Keyboard Shortcuts
+
+`Mod+Shift+P` opens the quick palette: type to filter, then run a command with
+Enter. It lists only commands that apply on the current surface, shows each
+one's shortcut, and offers recently run commands first. The numbered
+accelerator families and the relative cycle commands stay rebindable but
+unlisted. Plugins can add their own rows, listed under "Plugins".
 
 Settings → Keyboard edits app command shortcuts. Overrides are stored in the
 server database, applied live to every connected window, and kept across
@@ -219,6 +249,7 @@ delayed shortcut badges without disabling any shortcuts.
 
 | Area      | Command                                   | Default                           | Availability             |
 | --------- | ----------------------------------------- | --------------------------------- | ------------------------ |
+| Palette   | Quick palette                             | `Mod+Shift+P`                     | All clients              |
 | Threads   | New thread                                | `Mod+N` / `Mod+Shift+O`           | Desktop / web            |
 | Threads   | Search threads                            | `Mod+K`                           | All clients              |
 | Threads   | Rename focused thread                     | Unassigned                        | Thread view              |
@@ -983,3 +1014,12 @@ intended mode so ambient shell state does not silently retarget bb.
 
 Use `pnpm reset` or `pnpm reset:dev` to clear a data directory. These only
 remove bb-managed state, not provider credentials.
+
+`BB_PROVIDER_BRIDGE_RECORD_DIR=<dir>` in the host daemon's environment turns
+on bridge record mode: every provider bridge writes the lines that cross its
+runtime and provider wires as NDJSON under `<dir>/<providerId>/<threadId>/`.
+It is a development and diagnostics knob, off by default, and never reaches a
+provider child. See [provider-bridge-protocol.md](provider-bridge-protocol.md),
+"Record mode", and [debugging-and-qa.md](debugging-and-qa.md). Raw recordings
+can contain secrets; redact them with `scripts/provider-recordings/redact.mjs`
+before you share them.

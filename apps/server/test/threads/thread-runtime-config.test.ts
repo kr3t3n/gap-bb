@@ -4,15 +4,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   markThreadDeleted,
-  setAppSettings,
   setExperiments,
   setThreadExecutionOverride,
 } from "@bb/db";
 import {
-  defaultAppSettings,
   defaultExperiments,
   encodeClientTurnRequestIdNumber,
 } from "@bb/domain";
+import { validatePluginProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
+import { buildPluginProviderRegistration } from "../../src/services/providers/plugin-provider-registration.js";
 import type { DiscoveredSkill } from "@bb/host-daemon-contract";
 import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import { readSkillTreeManifest } from "../../src/services/skills/injected-skills.js";
@@ -38,7 +38,7 @@ import {
   registerHostRpcResponder,
   type HostRpcResponder,
 } from "../helpers/host-rpc.js";
-import { registerFakeProviders } from "../helpers/provider-registry.js";
+import { stubHostArtifact } from "../helpers/provider-registry.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
 import { textInput } from "../helpers/prompt-input.js";
 import { withTestHarness } from "../helpers/test-app.js";
@@ -825,15 +825,10 @@ describe("thread runtime config", () => {
     });
   });
 
-  it("resolves native memory preferences independently for Codex and Claude Code", async () => {
+  it("carries each provider's plugin-derived options and nothing provider-named on the shared contract", async () => {
     await withTestHarness(async (harness) => {
-      setAppSettings(harness.db, {
-        ...defaultAppSettings,
-        codexMemoryEnabled: false,
-        claudeCodeMemoryEnabled: true,
-      });
       const { host } = seedHostSession(harness.deps, {
-        id: "host-provider-memory-settings",
+        id: "host-provider-options",
       });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
@@ -843,7 +838,7 @@ describe("thread runtime config", () => {
         projectId: project.id,
       });
 
-      async function build(providerId: "codex" | "claude-code") {
+      async function build(providerId: "codex" | "claude-code" | "pi") {
         const thread = seedThread(harness.deps, {
           projectId: project.id,
           environmentId: environment.id,
@@ -852,7 +847,12 @@ describe("thread runtime config", () => {
         const execution = await resolveExecutionOptions(harness.deps, {
           threadId: thread.id,
           requestedExecution: {
-            model: providerId === "codex" ? "gpt-5" : "claude-sonnet-4-6",
+            model:
+              providerId === "codex"
+                ? "gpt-5"
+                : providerId === "pi"
+                  ? "pi-model"
+                  : "claude-sonnet-4-6",
             source: "client/turn/requested",
           },
         });
@@ -870,82 +870,71 @@ describe("thread runtime config", () => {
         });
       }
 
-      expect((await build("codex")).options.memoryEnabled).toBe(false);
-      expect((await build("claude-code")).options.memoryEnabled).toBe(true);
-    });
-  });
-
-  it("carries provider-native feature settings independently", async () => {
-    await withTestHarness(async (harness) => {
-      setAppSettings(harness.db, {
-        ...defaultAppSettings,
-        codexSubagentsDisabled: true,
-        claudeCodeSubagentsDisabled: true,
-        claudeCodeWorkflowsDisabled: true,
-      });
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-provider-subagent-settings",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-      });
-
-      async function build(providerId: "codex" | "claude-code") {
-        const thread = seedThread(harness.deps, {
-          projectId: project.id,
-          environmentId: environment.id,
-          providerId,
-        });
-        const execution = await resolveExecutionOptions(harness.deps, {
-          threadId: thread.id,
-          requestedExecution: {
-            model: providerId === "codex" ? "gpt-5" : "claude-sonnet-4-6",
-            source: "client/turn/requested",
-          },
-        });
-        return buildThreadStartCommand(harness.deps, {
-          environment,
-          execution,
-          fork: null,
-          permissionEscalation: "ask",
-          input: textInput("hello"),
-          projectId: project.id,
-          providerId,
-          requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
-          syncGeneratedTitle: false,
-          thread,
-        });
-      }
-
+      // The default knobs each bridge receives when the user changed nothing.
+      // A wrong default here silently turns a provider feature off.
       const codex = await build("codex");
-      expect(codex.options.providerSubagentsEnabled).toBe(false);
-      expect(codex.disallowedTools).toBeUndefined();
+      expect(codex.options.providerOptions).toEqual({
+        memoryEnabled: true,
+        providerSubagentsEnabled: true,
+      });
+      expect(codex.options.promptMode).toBeUndefined();
+      expect(codex.options).not.toHaveProperty("memoryEnabled");
+      expect(codex.options).not.toHaveProperty("workflowsEnabled");
 
       const claudeCode = await build("claude-code");
-      expect(claudeCode.options.providerSubagentsEnabled).toBe(false);
-      expect(claudeCode.options.workflowsEnabled).toBe(false);
-      expect(claudeCode.disallowedTools).toBeUndefined();
+      expect(claudeCode.options.providerOptions).toEqual({
+        memoryEnabled: true,
+        providerSubagentsEnabled: true,
+        workflowsEnabled: true,
+      });
+
+      // A provider that derives nothing still carries an explicit empty bag.
+      const pi = await build("pi");
+      expect(pi.options.providerOptions).toEqual({});
     });
   });
 
-  it("scopes the Claude workflows toggle to claude-code only", async () => {
+  it("runs the owning plugin's options hook with the command context", async () => {
     await withTestHarness(async (harness) => {
-      // A non-Claude provider that declares `supportsWorkflows: true`, like
-      // the first third-party workflow provider would.
-      registerFakeProviders(
-        harness.deps.providerRegistry,
-        harness.deps.pluginHostArtifacts,
-      );
-      setAppSettings(harness.db, {
-        ...defaultAppSettings,
-        claudeCodeWorkflowsDisabled: true,
+      const pluginId = "provider-hooked";
+      const registration = buildPluginProviderRegistration({
+        available: true,
+        pluginId,
+        declaration: validatePluginProviderDeclaration({
+          id: "hooked",
+          displayName: "Hooked",
+          capabilities: {
+            experimental_providerHealth: false,
+            experimental_providerUsage: false,
+            experimental_providerInstallation: false,
+            supportsServiceTier: false,
+            supportsNativeUserQuestion: false,
+            fork: "none",
+            supportsManualCompaction: false,
+            supportsThreadArchive: false,
+            supportsThreadRename: false,
+            permissionModes: ["accept-edits", "auto", "full"],
+            reasoningLevels: ["medium"],
+          },
+          composerActions: ["plan"],
+          experimental_deriveProviderOptions: (context) => ({
+            seen: {
+              threadId: context.threadId,
+              projectId: context.projectId,
+              model: context.model,
+              permissionMode: context.permissionMode,
+              promptMode: context.promptMode ?? null,
+            },
+            verbose: context.settings.verbose === true,
+          }),
+        }),
+        readSettings: () => ({ verbose: true }),
       });
+      harness.deps.providerRegistry.register({ ...registration, pluginId });
+      harness.deps.pluginHostArtifacts.set(pluginId, stubHostArtifact(pluginId));
+
       const { host } = seedHostSession(harness.deps, {
-        id: "host-provider-workflows-scope",
+        id: "host-provider-hook",
       });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
@@ -954,44 +943,44 @@ describe("thread runtime config", () => {
         hostId: host.id,
         projectId: project.id,
       });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "hooked",
+      });
+      const command = await buildThreadStartCommand(harness.deps, {
+        environment,
+        execution: {
+          model: "hook-model",
+          permissionMode: "auto",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+          source: "client/turn/requested",
+        },
+        fork: null,
+        permissionEscalation: "ask",
+        input: textInput("hello"),
+        projectId: project.id,
+        providerId: "hooked",
+        requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
+        syncGeneratedTitle: false,
+        thread,
+      });
 
-      async function build(providerId: "fake" | "claude-code", model: string) {
-        const thread = seedThread(harness.deps, {
+      expect(command.options.providerOptions).toEqual({
+        seen: {
+          threadId: thread.id,
           projectId: project.id,
-          environmentId: environment.id,
-          providerId,
-        });
-        return buildThreadStartCommand(harness.deps, {
-          environment,
-          execution: {
-            model,
-            permissionMode: "auto",
-            reasoningLevel: "medium",
-            serviceTier: "default",
-            source: "client/turn/requested",
-          },
-          fork: null,
-          permissionEscalation: "ask",
-          input: textInput("hello"),
-          projectId: project.id,
-          providerId,
-          requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
-          syncGeneratedTitle: false,
-          thread,
-        });
-      }
-
-      // Claude Code honors the Claude-named toggle.
-      const claudeCode = await build("claude-code", "claude-sonnet-4-6");
-      expect(claudeCode.options.workflowsEnabled).toBe(false);
-
-      // Another workflows-capable provider is unaffected by it.
-      const fake = await build("fake", "fake-model");
-      expect(fake.options.workflowsEnabled).toBe(true);
+          model: "hook-model",
+          permissionMode: "auto",
+          promptMode: null,
+        },
+        verbose: true,
+      });
     });
   });
 
-  it("sets Claude Code native plan mode when the prompt starts from a plan command pill", async () => {
+  it("enters plan mode when the prompt starts from the provider's declared plan command", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
         id: "host-runtime-claude-plan",
@@ -1050,7 +1039,39 @@ describe("thread runtime config", () => {
       });
 
       expect(command.input).toEqual(input);
-      expect(command.options.claudeCodePermissionMode).toBe("plan");
+      // The shared contract carries the BB prompt mode; the Claude plugin's
+      // hook maps it onto its own native flag inside the opaque bag.
+      expect(command.options.promptMode).toBe("plan");
+      expect(command.options.providerOptions).toMatchObject({
+        claudeCodePermissionMode: "plan",
+      });
+
+      // A provider that declares no plan action never sees the mode: the
+      // `/plan` text stays an ordinary mention.
+      const piThread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "pi",
+      });
+      const piCommand = await buildThreadStartCommand(harness.deps, {
+        environment,
+        execution: {
+          model: "pi-model",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+          source: "client/turn/requested",
+        },
+        fork: null,
+        permissionEscalation: "ask",
+        input,
+        projectId: project.id,
+        providerId: "pi",
+        requestId: encodeClientTurnRequestIdNumber({ value: 2 }),
+        syncGeneratedTitle: false,
+        thread: piThread,
+      });
+      expect(piCommand.options.promptMode).toBeUndefined();
     });
   });
 

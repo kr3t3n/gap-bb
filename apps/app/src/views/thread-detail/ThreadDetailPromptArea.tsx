@@ -239,6 +239,8 @@ interface InlineDraftComposerOptions {
   historyResetKey: string;
   isSubmitting: boolean;
   onChangeMessage: FollowUpComposerProps["onChangeMessage"];
+  /** Escape pressed in the editor; passes the editor's cancel action. */
+  onEscape?: FollowUpComposerProps["onEscape"];
   onSelectHistoryEntry: (draft: PromptDraftState) => void;
   permission: FollowUpPromptBoxProps["permission"];
   pluginComposerHost: PluginComposerHost;
@@ -251,7 +253,7 @@ interface InlineDraftComposerOptions {
   textEffects: FollowUpPromptBoxProps["textEffects"];
   threadRuntimeDisplayStatus: FollowUpComposerProps["threadRuntimeDisplayStatus"];
   typeahead: FollowUpPromptBoxProps["typeahead"];
-  zenModeResetKey: string;
+  collapseResetKey: string;
 }
 
 /**
@@ -280,6 +282,7 @@ function buildInlineDraftComposer(options: InlineDraftComposerOptions) {
         onChangeMessage: options.onChangeMessage,
         onModifierSubmit: options.submit,
         onSubmit: options.submit,
+        onEscape: options.onEscape,
         submitTitle: options.submitTitle,
         compactPromptPlaceholder: options.compactPromptPlaceholder,
         promptPlaceholder: options.promptPlaceholder,
@@ -302,7 +305,7 @@ function buildInlineDraftComposer(options: InlineDraftComposerOptions) {
       permissionReadOnly
       typeahead={options.typeahead}
       promptActions={options.promptActions}
-      zenModeResetKey={options.zenModeResetKey}
+      collapseResetKey={options.collapseResetKey}
       focusEndKey={`${options.focusSessionKey}:${options.editFocusNonce}`}
       isPrimaryComposer={false}
       showScrollToBottomButton={false}
@@ -912,6 +915,7 @@ export function ThreadDetailPromptArea({
     const submittedDraft = currentPromptDraft;
     const submittedInput = currentPromptDraftInput;
     const shortcutRequest = buildFollowUpShortcutRequest({
+      execution: followUpExecutionSelection,
       input: submittedInput,
       queuedMessages: queuedMessagesRef.current,
       threadId: thread.id,
@@ -961,6 +965,7 @@ export function ThreadDetailPromptArea({
     canSubmitModifierShortcut,
     currentPromptDraft,
     currentPromptDraftInput,
+    followUpExecutionSelection,
     promptDraft,
     queuedMessagesRef,
     sendMessage,
@@ -1357,7 +1362,7 @@ export function ThreadDetailPromptArea({
         textEffects: queuedComposerTextEffects,
         threadRuntimeDisplayStatus: runtimeDisplayStatus,
         typeahead: typeaheadConfig,
-        zenModeResetKey: `queued-message:${queuedMessageId}`,
+        collapseResetKey: `queued-message:${queuedMessageId}`,
       }),
     };
     return { inlineEditor, pluginComposerHost };
@@ -1435,6 +1440,7 @@ export function ThreadDetailPromptArea({
               text,
               mentions,
             })),
+          onEscape: sentMessageEdit.onCancel,
           onSelectHistoryEntry: (nextDraft) =>
             sentMessageEdit.updateDraft(() => nextDraft),
           permission: bottomPermissionConfig,
@@ -1461,7 +1467,7 @@ export function ThreadDetailPromptArea({
           textEffects: sentMessageComposerTextEffects,
           threadRuntimeDisplayStatus: runtimeDisplayStatus,
           typeahead: typeaheadConfig,
-          zenModeResetKey: `sent-message:${operationId}`,
+          collapseResetKey: `sent-message:${operationId}`,
         })}
       </InlineMessageEditorFrame>,
       hostElement,
@@ -1696,7 +1702,7 @@ export function ThreadDetailPromptArea({
       pluginComposerHost={normalPluginComposerHost}
       pluginComposerScope={normalPluginComposerHost.scope}
       textEffects={promptTextEffects}
-      zenModeResetKey={thread.id}
+      collapseResetKey={thread.id}
       focusEndKey={bottomFocusEndKey}
       environmentSummary={environmentSummary}
       contextWindowUsage={contextWindowUsage ?? null}

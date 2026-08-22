@@ -18,6 +18,7 @@ import {
   isApprovalPendingInteractionPayload,
   isApprovalPendingInteractionResolution,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import type { CodexMacOsPermissionItem } from "./extension-kinds.js";
 import { normalizePendingInteractionRequestedPermissionProfile } from "./pending-interaction-normalization.js";
 import type { CommandExecutionRequestApprovalResponse } from "./generated/codex-app-server/schema/v2/CommandExecutionRequestApprovalResponse.js";
 import type { FileChangeRequestApprovalResponse } from "./generated/codex-app-server/schema/v2/FileChangeRequestApprovalResponse.js";
@@ -261,6 +262,11 @@ export function buildCodexInteractiveResponse(
       throw new ProviderResponseEncodeError(
         "Codex plan-review interactive requests are unsupported",
       );
+    // Unsupported until WS5: this bridge raises no tool_use subject yet.
+    case "tool_use":
+      throw new ProviderResponseEncodeError(
+        "tool_use approval subjects are not produced by the Codex bridge until WS5",
+      );
     default:
       return assertNever(args.request.payload.subject);
   }
@@ -326,22 +332,58 @@ function toPendingInteractionPermissionProfile(
   });
 }
 
+/**
+ * The grantable part of a codex permission profile. A macOS profile is not
+ * grantable through bb's provider-neutral permission layer; it rides the
+ * timeline as a `provider-codex/macos-permission` item instead
+ * (`extractCodexMacOsPermissionRequest`), so the approval it came with still
+ * reaches the user.
+ */
 function toPendingInteractionGrantablePermissionProfile(
   permissions: CodexAdditionalPermissions | CodexRequestedPermissionProfile,
 ): PendingInteractionGrantablePermissionProfile {
-  if (
-    "macos" in permissions &&
-    permissions.macos !== null &&
-    permissions.macos !== undefined
-  ) {
-    throw new ProviderRequestDecodeErrorValue(
-      "Codex macOS permission grants are not supported by the provider-neutral permission layer",
-    );
-  }
   const normalized = toPendingInteractionPermissionProfile(permissions);
   return {
     network: normalized.network,
     fileSystem: normalized.fileSystem,
+  };
+}
+
+export interface CodexMacOsPermissionRequest {
+  providerThreadId: string;
+  turnId: string;
+  item: CodexMacOsPermissionItem;
+}
+
+/**
+ * The macOS permission profile a command approval asks for, when it asks for
+ * one. Decoded beside the approval (never instead of it) so the bridge can
+ * put the profile on the timeline as its own row.
+ */
+export function extractCodexMacOsPermissionRequest(
+  request: ProviderInboundRequest,
+): CodexMacOsPermissionRequest | null {
+  if (request.method !== "item/commandExecution/requestApproval") {
+    return null;
+  }
+  const parsed = codexCommandExecutionRequestApprovalParamsSchema.safeParse(
+    request.params,
+  );
+  if (!parsed.success) {
+    return null;
+  }
+  const macos = parsed.data.additionalPermissions?.macos;
+  if (macos === null || macos === undefined) {
+    return null;
+  }
+  return {
+    providerThreadId: parsed.data.threadId,
+    turnId: parsed.data.turnId,
+    item: {
+      approvalItemId: parsed.data.itemId,
+      reason: parsed.data.reason ?? null,
+      permissions: macos,
+    },
   };
 }
 

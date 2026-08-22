@@ -123,7 +123,17 @@ describe("buildFollowUpSubmission", () => {
       }),
     ).toEqual({
       kind: "steer",
-      request: { id: "t1", input: INPUT, mode: "steer-if-active" },
+      // get-bb/bb#1860: the steer carries the picker selection like a send.
+      request: {
+        id: "t1",
+        input: INPUT,
+        mode: "steer-if-active",
+        model: "fake-model",
+        permissionMode: "auto",
+        reasoningLevel: "medium",
+        serviceTier: "fast",
+        executionInputSources: { model: "explicit" },
+      },
     });
     expect(
       buildFollowUpSubmission({

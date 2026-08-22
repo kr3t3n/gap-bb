@@ -19,6 +19,7 @@ describe("threadDetailPromptSubmission", () => {
   it("prioritizes current prompt input over queued messages for the follow-up shortcut", () => {
     expect(
       buildFollowUpShortcutRequest({
+        execution: null,
         input: textInput,
         queuedMessages: [{ id: "queued-1" }, { id: "queued-2" }],
         threadId: "thread-1",
@@ -33,9 +34,50 @@ describe("threadDetailPromptSubmission", () => {
     });
   });
 
+  // get-bb/bb#1860: the picker can change mid-turn. The steer must carry the
+  // selection like the normal send does, or the server falls back to the
+  // active turn's execution tuple.
+  it("steers with the selected execution options", () => {
+    expect(
+      buildFollowUpShortcutRequest({
+        execution: {
+          model: "gpt-5.6-luna",
+          permissionMode: "full",
+          reasoningLevel: "low",
+          serviceTier: "fast",
+          supportsServiceTier: false,
+          executionInputSources: {
+            model: "explicit",
+            reasoningLevel: "explicit",
+            permissionMode: "explicit",
+          },
+        },
+        input: textInput,
+        queuedMessages: [{ id: "queued-1" }],
+        threadId: "thread-1",
+      }),
+    ).toEqual({
+      kind: "draft",
+      request: {
+        id: "thread-1",
+        input: textInput,
+        mode: "steer-if-active",
+        model: "gpt-5.6-luna",
+        permissionMode: "full",
+        reasoningLevel: "low",
+        executionInputSources: {
+          model: "explicit",
+          reasoningLevel: "explicit",
+          permissionMode: "explicit",
+        },
+      },
+    });
+  });
+
   it("uses only the next queued message for an empty follow-up shortcut", () => {
     expect(
       buildFollowUpShortcutRequest({
+        execution: null,
         input: [],
         queuedMessages: [{ id: "queued-1" }, { id: "queued-2" }],
         threadId: "thread-1",
@@ -53,6 +95,7 @@ describe("threadDetailPromptSubmission", () => {
   it("does not build an empty follow-up shortcut without queued messages", () => {
     expect(
       buildFollowUpShortcutRequest({
+        execution: null,
         input: [],
         queuedMessages: [],
         threadId: "thread-1",

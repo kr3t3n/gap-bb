@@ -9,7 +9,6 @@ import {
   machinesHref,
   marketplacesHref,
   pluginsHref,
-  providerSettingsHref,
   serverStatusHref,
   settingsSectionHref,
   skillsHref,
@@ -101,22 +100,13 @@ export function SettingsScreen() {
 
       <SettingsSection title="Providers">
         <ListRow
-          title="Codex"
-          subtitle="Memory, subagents"
+          title="Provider settings"
+          subtitle="Each provider's options live on its plugin"
           leading="Brain"
           trailing="chevron"
           disabled={!connected}
-          onPress={() => router.push(providerSettingsHref("codex"))}
-          testID="settings-provider-codex"
-        />
-        <ListRow
-          title="Claude Code"
-          subtitle="Memory, subagents, workflows"
-          leading="Brain"
-          trailing="chevron"
-          disabled={!connected}
-          onPress={() => router.push(providerSettingsHref("claude-code"))}
-          testID="settings-provider-claude-code"
+          onPress={() => router.push(pluginsHref())}
+          testID="settings-provider-plugins"
         />
         <ListRow
           title="Usage limits"

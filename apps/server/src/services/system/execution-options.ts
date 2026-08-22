@@ -6,7 +6,6 @@ import type {
   SystemProvidersQuery,
 } from "@bb/server-contract";
 import { buildAcpProviderInfo } from "../providers/acp-provider-tier.js";
-import { listClaudeCodeFallbackModels } from "./claude-code-fallback-models.js";
 import {
   formatCustomAcpAgentProviderId,
   type CustomAcpAgent,
@@ -649,7 +648,7 @@ async function loadSystemProviderModels(
       provider,
     });
     return {
-      models: listFallbackModelsForLoadError({
+      models: listFallbackModelsForLoadError(deps, {
         code: modelLoadError.code,
         providerId: provider.id,
       }),
@@ -701,25 +700,33 @@ async function listProviderModelsMemoized(
 }
 
 // A transient probe failure is not evidence that a model was retired, so the
-// picker gets a provisional list instead of an empty one. `modelLoadError` stays
-// set, which is what keeps callers treating this list as unverified: absence
-// from it must never trigger thread model recovery. `missing_executable` and
-// `auth_required` are excluded on purpose — those are actionable setup states
-// the app routes to an install/auth prompt, so offering models there would only
-// defer the real failure to submit time.
-function listFallbackModelsForLoadError({
-  code,
-  providerId,
-}: {
-  code: SystemExecutionOptionsModelLoadErrorCode;
-  providerId: string;
-}): AvailableModel[] {
-  if (providerId !== "claude-code") {
+// picker gets the provider's declared cold-cache fallback instead of an empty
+// list. `modelLoadError` stays set, which is what keeps callers treating this
+// list as unverified: absence from it must never trigger thread model
+// recovery. `missing_executable` and `auth_required` are excluded on purpose —
+// those are actionable setup states the app routes to an install/auth prompt,
+// so offering models there would only defer the real failure to submit time.
+function listFallbackModelsForLoadError(
+  deps: Pick<LoggedWorkSessionDeps, "providerRegistry">,
+  {
+    code,
+    providerId,
+  }: {
+    code: SystemExecutionOptionsModelLoadErrorCode;
+    providerId: string;
+  },
+): AvailableModel[] {
+  if (code !== "timeout" && code !== "failed") {
     return [];
   }
-  return code === "timeout" || code === "failed"
-    ? listClaudeCodeFallbackModels()
-    : [];
+  const fallback = deps.providerRegistry.get(providerId)?.fallbackModels ?? [];
+  // Fresh objects: these flow into mutable API responses.
+  return fallback.map((model) => ({
+    ...model,
+    supportedReasoningEfforts: model.supportedReasoningEfforts.map(
+      (effort) => ({ ...effort }),
+    ),
+  }));
 }
 
 function buildModelLoadError({

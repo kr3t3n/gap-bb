@@ -204,12 +204,6 @@ export function settingsSectionHref(section: SettingsSectionRoute): Href {
   return untypedHref(`/settings/${section}`);
 }
 
-export type SettingsProviderRoute = "codex" | "claude-code";
-
-/** A provider's settings page (`/settings/providers/[providerId]`). */
-export function providerSettingsHref(providerId: SettingsProviderRoute): Href {
-  return untypedHref("/settings/providers/[providerId]", { providerId });
-}
 
 /** The machines list (`/settings/machines`). */
 export function machinesHref(): Href {

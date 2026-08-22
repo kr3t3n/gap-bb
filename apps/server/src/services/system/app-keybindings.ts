@@ -134,6 +134,9 @@ const splitWithoutModal = {
 } as const;
 
 export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
+  // Mod+P is file.quickOpen and Mod+K is thread.search, so the palette takes
+  // the editor-conventional Mod+Shift+P.
+  binding("palette.open", "p", { mod: true, shift: true }, mainWithoutModal),
   // Browsers reserve Mod+N before the page receives a key event. Keep the
   // t3code-style alias available in web clients while desktop retains Mod+N.
   binding("thread.new", "o", { mod: true, shift: true }, mainWithoutModal),

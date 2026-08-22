@@ -17,7 +17,7 @@ import {
   hasParentedEventCrossingSequence,
   insertEvents,
   listActiveBackgroundTaskCountsByThreadIds,
-  listLatestGoalEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByThreadIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listStoredConversationOutlineEventRows,
   listStoredEventRows,
@@ -920,7 +920,7 @@ describe("slow query index plans", () => {
     db.$client.close();
   });
 
-  it("pins the latest-goal lookup to the partial goal index with no temp sort", () => {
+  it("pins the latest-thread-state lookup to the partial index with no temp sort", () => {
     const { db, thread } = setup();
     insertEvents(db, noopNotifier, [
       {
@@ -937,14 +937,17 @@ describe("slow query index plans", () => {
 
     const captured = captureStatements(db, () => {
       expect(
-        listLatestGoalEventRowsByThreadIds(db, { threadIds: [thread.id] }),
+        listLatestThreadStateEventRowsByThreadIds(db, {
+          threadIds: [thread.id],
+          kind: "provider-codex/goal",
+        }),
       ).toHaveLength(1);
     });
     const statement = captured.find((entry) =>
-      entry.sql.includes("latest_goal"),
+      entry.sql.includes("latest_state"),
     );
     if (!statement) {
-      throw new Error("Expected the latest-goal lookup SQL");
+      throw new Error("Expected the latest-thread-state lookup SQL");
     }
 
     // The #1131 cold stall: with an ORDER BY present, the stats-less planner
@@ -957,7 +960,9 @@ describe("slow query index plans", () => {
       params: statement.params,
       sql: statement.sql,
     });
-    expect(details.match(/events_goal_thread_sequence_idx/gu)).toHaveLength(2);
+    expect(
+      details.match(/events_thread_state_thread_sequence_idx/gu),
+    ).toHaveLength(2);
     expect(details).not.toContain("USING INDEX events_thread_sequence_idx");
     expect(details).not.toContain("USE TEMP B-TREE");
 

@@ -62,10 +62,6 @@ export function RootNavigator() {
         name="settings/experiments"
         options={{ title: "Experiments" }}
       />
-      <Stack.Screen
-        name="settings/providers/[providerId]"
-        options={{ title: "Provider" }}
-      />
       <Stack.Screen name="settings/usage" options={{ title: "Usage limits" }} />
       <Stack.Screen name="settings/updates" options={{ title: "Updates" }} />
       <Stack.Screen

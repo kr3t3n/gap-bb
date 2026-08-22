@@ -690,6 +690,97 @@ describe("Codex ChatGPT client", () => {
     expect(retryHeaders.get("authorization")).toBe(`Bearer ${accessToken}`);
   });
 
+  it("classifies a persistent Cloudflare challenge as transient without leaking the challenge page", async () => {
+    const homeDir = await makeTempHome();
+    const accessToken = createAccessToken({
+      accountId: "account-123",
+      expSeconds: Math.floor(Date.now() / 1000) + 3600,
+    });
+    await writeCodexAuth({
+      homeDir,
+      accessToken,
+      refreshToken: "refresh-token",
+    });
+    const fetchMock = setupFetchMock();
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          `<html>\n<head>\n<meta name="viewport" content="width=device-width" />\n<title>Just a moment...</title>\n<style>body{font-family:Arial}</style>\n</head><body>${"x".repeat(2000)}</body></html>`,
+          {
+            status: 403,
+            headers: {
+              "content-type": "text/html; charset=UTF-8",
+              "cf-mitigated": "challenge",
+              server: "cloudflare",
+              "set-cookie":
+                "__cf_bm=cloudflare-cookie; Path=/; Secure; HttpOnly",
+            },
+          },
+        ),
+    );
+
+    let thrown: Error | null = null;
+    try {
+      await transcribeCodexVoice({
+        type: "codex.voice.transcribe",
+        model: "gpt-4o-mini-transcribe",
+        audioBase64: Buffer.from("audio").toString("base64"),
+        mimeType: "audio/webm",
+        filename: "prompt.webm",
+        prompt: null,
+        timeoutMs: 30000,
+      });
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw new Error("Expected Error from challenged transcription");
+      }
+      thrown = error;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(thrown).toMatchObject({
+      code: "codex_service_unavailable",
+      message:
+        "Codex transcription request failed with HTTP 403: chatgpt.com answered with a Cloudflare challenge that bb cannot solve. Retry, or set BB_TRANSCRIPTION to an openai/ model with OPENAI_API_KEY.",
+    });
+  });
+
+  it("omits HTML error pages from Codex error messages", async () => {
+    const homeDir = await makeTempHome();
+    const accessToken = createAccessToken({
+      accountId: "account-123",
+      expSeconds: Math.floor(Date.now() / 1000) + 3600,
+    });
+    await writeCodexAuth({
+      homeDir,
+      accessToken,
+      refreshToken: "refresh-token",
+    });
+    const fetchMock = setupFetchMock();
+    fetchMock.mockResolvedValueOnce(
+      new Response("<html><body>Access denied (error 1020)</body></html>", {
+        status: 403,
+        headers: { "content-type": "text/html; charset=UTF-8" },
+      }),
+    );
+
+    await expect(
+      transcribeCodexVoice({
+        type: "codex.voice.transcribe",
+        model: "gpt-4o-mini-transcribe",
+        audioBase64: Buffer.from("audio").toString("base64"),
+        mimeType: "audio/webm",
+        filename: "prompt.webm",
+        prompt: null,
+        timeoutMs: 30000,
+      }),
+    ).rejects.toMatchObject({
+      code: "codex_request_failed",
+      message: "Codex transcription request failed with HTTP 403",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("transcribes voice with Codex API key auth from ~/.codex/auth.json", async () => {
     const homeDir = await makeTempHome();
     await writeCodexApiKeyAuth({

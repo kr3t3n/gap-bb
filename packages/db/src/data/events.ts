@@ -808,6 +808,79 @@ export function appendDaemonEventsInTransaction(
   };
 }
 
+export interface CopyStoredThreadEventsArgs {
+  /** Source rows in ascending sequence order. */
+  rows: readonly StoredEventRow[];
+  targetEnvironmentId: string | null;
+  targetThreadId: string;
+}
+
+/**
+ * Append copies of another thread's stored rows to the target thread, in the
+ * given order, after its current high-water mark. Each copy keeps the source
+ * row's type, scope, turn id, item fields, provider thread id, payload, and
+ * original `created_at` (the copied history happened when it happened), and
+ * takes a fresh id and the target's next sequence. Copied rows index search
+ * segments like any other appended event. Returns the number of copied rows.
+ */
+export function copyStoredThreadEventsInTransaction(
+  db: DbTransaction,
+  args: CopyStoredThreadEventsArgs,
+): number {
+  if (args.rows.length === 0) {
+    return 0;
+  }
+  const highWaterMarks = getHighWaterMarks(db, [args.targetThreadId]);
+  let sequence = (highWaterMarks[args.targetThreadId] ?? 0) + 1;
+  const now = Date.now();
+  for (const row of args.rows) {
+    db.run(
+      sql`INSERT INTO events
+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
+        VALUES (
+          ${createEventId()},
+          ${args.targetThreadId},
+          ${args.targetEnvironmentId},
+          ${row.scopeKind},
+          ${row.turnId},
+          ${row.providerThreadId},
+          ${sequence},
+          ${row.type},
+          ${row.itemId},
+          ${row.itemKind},
+          ${row.parentToolCallId},
+          ${row.data},
+          ${row.createdAt}
+        )`,
+    );
+    const event = parseDaemonThreadEvent({
+      data: row.data,
+      environmentId: args.targetEnvironmentId,
+      itemId: row.itemId,
+      itemKind: row.itemKind,
+      parentToolCallId: row.parentToolCallId,
+      providerThreadId: row.providerThreadId,
+      scope:
+        row.turnId === null
+          ? { kind: "thread" }
+          : { kind: "turn", turnId: row.turnId },
+      threadId: args.targetThreadId,
+      type: row.type,
+    });
+    if (event !== null) {
+      upsertThreadSearchSegments(db, {
+        updatedAt: now,
+        segments: listThreadSearchSegmentsForThreadEvent({
+          event,
+          sequence,
+        }),
+      });
+    }
+    sequence += 1;
+  }
+  return args.rows.length;
+}
+
 export function appendStoredThreadEventInTransaction<
   TType extends ThreadEventType,
 >(db: DbTransaction, args: AppendStoredThreadEventArgs<TType>): number;
@@ -1030,8 +1103,10 @@ export interface ListStoredEventRowsByParentToolCallIdsArgs {
 export type GetStoredEventRowsByParentToolCallIdsDataBytesArgs =
   ListStoredEventRowsByParentToolCallIdsArgs;
 
-export interface ListLatestGoalEventRowsByThreadIdsArgs {
+export interface ListLatestThreadStateEventRowsByThreadIdsArgs {
   threadIds: readonly string[];
+  /** The plugin thread-state kind (`"<pluginId>/<name>"`) to read. */
+  kind: string;
 }
 
 export interface ListOpenTurnInputAcceptedRowsByThreadIdsArgs {
@@ -1074,6 +1149,23 @@ export interface ListStoredClientTurnRequestIdsInRangeArgs {
 
 export interface GetStoredTurnRequestEventForTurnArgs {
   threadId: string;
+  turnId: string;
+}
+
+export interface FindLastRootStoredTurnStartedArgs {
+  /** Inclusive upper bound on the turn/started sequence; absent means the whole thread. */
+  atOrBeforeSequence?: number;
+  threadId: string;
+}
+
+export interface StoredTurnStartedKey {
+  sequence: number;
+  turnId: string;
+}
+
+export interface CompletedRootStoredTurn {
+  completedSequence: number;
+  startedSequence: number;
   turnId: string;
 }
 
@@ -1302,26 +1394,34 @@ export function listStoredEventRows(
   return merged;
 }
 
-export function listLatestGoalEventRowsByThreadIds(
+export function listLatestThreadStateEventRowsByThreadIds(
   db: DbQueryConnection,
-  args: ListLatestGoalEventRowsByThreadIdsArgs,
+  args: ListLatestThreadStateEventRowsByThreadIdsArgs,
 ): StoredEventRow[] {
   return queryInSqliteVariableBatches({
     dedupeKey: (threadId) => threadId,
-    fixedVariableCount: 0,
+    fixedVariableCount: 1,
     queryBatch: (threadIds) => {
       // This runs over every listed thread on each sidebar bootstrap, so it
-      // must stay proportional to goal events, not all events. Literal goal
-      // types imply the partial-index predicate at prepare time; INDEXED BY
-      // prevents a stats-less planner from walking the full thread index; and
-      // no ORDER BY is needed because sequence is unique per thread (#1131).
-      const goalTypes = [
+      // must stay proportional to thread-state events, not all events. The
+      // literal type list implies the partial-index predicate at prepare
+      // time; INDEXED BY prevents a stats-less planner from walking the full
+      // thread index; and no ORDER BY is needed because sequence is unique
+      // per thread (#1131). Legacy goal rows count as the goal kind (they
+      // convert to it at read time); a live extension-state row counts only
+      // for its own kind.
+      const stateTypes = [
         "thread/goal/updated",
         "thread/goal/cleared",
+        "thread/extensionState/updated",
       ] as const satisfies readonly ThreadEventType[];
-      const goalTypesPredicate = sql.raw(
-        `IN (${goalTypes.map((type) => `'${type}'`).join(", ")})`,
+      const stateTypesPredicate = sql.raw(
+        `IN (${stateTypes.map((type) => `'${type}'`).join(", ")})`,
       );
+      const kindPredicate = sql`(
+        candidate.type <> 'thread/extensionState/updated'
+        OR json_extract(candidate.data, '$.kind') = ${args.kind}
+      )`;
       const threadIdList = sql.join(
         threadIds.map((threadId) => sql`${threadId}`),
         sql`, `,
@@ -1330,19 +1430,21 @@ export function listLatestGoalEventRowsByThreadIds(
         .select(storedEventRowFields)
         .from(events)
         .where(sql`${events}.rowid IN (
-        SELECT latest_goal.rowid
-        FROM ${events} AS latest_goal INDEXED BY events_goal_thread_sequence_idx
-        WHERE latest_goal.thread_id IN (${threadIdList})
-          AND latest_goal.type ${goalTypesPredicate}
-          AND latest_goal.sequence = (
+        SELECT latest_state.rowid
+        FROM ${events} AS latest_state INDEXED BY events_thread_state_thread_sequence_idx
+        WHERE latest_state.thread_id IN (${threadIdList})
+          AND latest_state.type ${stateTypesPredicate}
+          AND latest_state.sequence = (
             SELECT MAX(candidate.sequence)
-            FROM ${events} AS candidate INDEXED BY events_goal_thread_sequence_idx
-            WHERE candidate.thread_id = latest_goal.thread_id
-              AND candidate.type ${goalTypesPredicate}
+            FROM ${events} AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+            WHERE candidate.thread_id = latest_state.thread_id
+              AND candidate.type ${stateTypesPredicate}
+              AND ${kindPredicate}
           )
       )`)
         .all();
     },
+
     values: args.threadIds,
     variableCountPerValue: 1,
   });
@@ -2389,6 +2491,82 @@ export function hasRootStoredTurnStarted(
   return row !== undefined;
 }
 
+/**
+ * The latest root (non-nested) turn that has both started at or before a
+ * sequence and completed, or the thread's latest completed root turn when no
+ * bound is given. Nested turns record `parentToolCallId` only on
+ * `turn/started`, so the completion is found through the start.
+ */
+export function findLastCompletedRootStoredTurn(
+  db: DbQueryConnection,
+  args: FindLastRootStoredTurnStartedArgs,
+): CompletedRootStoredTurn | null {
+  const completed = alias(events, "completed");
+  const row = db
+    .select({
+      completedSequence: completed.sequence,
+      startedSequence: events.sequence,
+      turnId: events.turnId,
+    })
+    .from(events)
+    .innerJoin(
+      completed,
+      and(
+        eq(completed.threadId, events.threadId),
+        eq(completed.turnId, events.turnId),
+        eq(completed.type, "turn/completed"),
+      ),
+    )
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        eq(events.type, "turn/started"),
+        isRootTurnStartedEventData,
+        args.atOrBeforeSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.atOrBeforeSequence),
+      ),
+    )
+    .orderBy(desc(events.sequence), desc(completed.sequence))
+    .limit(1)
+    .get();
+  return row?.turnId
+    ? {
+        completedSequence: row.completedSequence,
+        startedSequence: row.startedSequence,
+        turnId: row.turnId,
+      }
+    : null;
+}
+
+/**
+ * The latest root (non-nested) turn/started at or before a sequence, or the
+ * thread's latest root turn when no bound is given. Null when no root turn has
+ * started in that range.
+ */
+export function findLastRootStoredTurnStarted(
+  db: DbQueryConnection,
+  args: FindLastRootStoredTurnStartedArgs,
+): StoredTurnStartedKey | null {
+  const row = db
+    .select({ sequence: events.sequence, turnId: events.turnId })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        eq(events.type, "turn/started"),
+        isRootTurnStartedEventData,
+        args.atOrBeforeSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.atOrBeforeSequence),
+      ),
+    )
+    .orderBy(desc(events.sequence))
+    .limit(1)
+    .get();
+  return row?.turnId ? { sequence: row.sequence, turnId: row.turnId } : null;
+}
+
 export function listRecentStoredEventRows(
   db: DbConnection,
   args: ListRecentStoredEventRowsArgs,
@@ -3127,27 +3305,6 @@ export function getLastStoredProviderThreadId(
   // before the next turn is dispatched through `thread/resume` with the new
   // workspace path, so keep the last provider id available across the switch.
   return latestProviderRow.providerThreadId;
-}
-
-export function getStoredProviderThreadIdAtOrBeforeSequence(
-  db: DbQueryConnection,
-  args: {
-    sequence: number;
-    threadId: string;
-  },
-): string | null {
-  const row = db
-    .select({ providerThreadId: events.providerThreadId })
-    .from(events)
-    .where(
-      sql`${events.threadId} = ${args.threadId}
-        AND ${events.sequence} <= ${args.sequence}
-        AND ${events.providerThreadId} IS NOT NULL`,
-    )
-    .orderBy(sql`${events.sequence} DESC`)
-    .limit(1)
-    .get();
-  return row?.providerThreadId ?? null;
 }
 
 export function listThreadTurnInterruptionEventStates(

@@ -27,13 +27,14 @@ Spawning:
     --machine <id-or-name>         Run on a machine (--host is an alias)
     --service-tier <tier>          Service tier: fast, default
     --permission-mode <mode>       Permission mode: accept-edits, auto, or full
+    --plan                         Send the prompt as the provider's /plan action (plan first, execute after approval)
     --section <id>                 Create the thread in a section
     --visibility <visibility>      visible or hidden; a child inherits its parent by default
     --file <path>                  Host-readable absolute or uploaded file path
     --image <path>                 Host-readable absolute or uploaded image path
     --origin-kind <kind>           Create a fork thread
     --source-thread <id>           Source thread for a fork
-    --source-seq-end <seq>         Last included source event sequence
+    --source-seq-end <seq>         Fork after the source turn containing this event sequence
 
   Execution defaults resolve from explicit flags, live parent execution, and
   remembered project defaults. With no remembered model, bb uses the explicitly
@@ -64,7 +65,7 @@ Forking:
   bb thread fork <source-thread-id> [options]
 
     --prompt <prompt>              Optional first prompt; omit for an idle fork
-    --source-seq-end <seq>         Fork at this source event sequence (tip by default)
+    --source-seq-end <seq>         Fork after the source turn containing this event sequence (tip by default)
     --workspace <mode>             isolated (default) or reuse
     --title <title>                Thread title
     --permission-mode <mode>       Inherit source by default; accepts accept-edits, auto, full
@@ -73,7 +74,13 @@ Forking:
     --file <path>                  Host-readable absolute or uploaded file path
     --image <path>                 Host-readable absolute or uploaded image path
 
-  Forks clone the source provider session on the same machine. Isolated forks
+  Forks clone the source provider session on the same machine and inherit the
+  source conversation in their timeline. --source-seq-end anchors the fork on
+  the completed source turn that contains that sequence: the clone and the
+  inherited timeline both end with that turn (an anchor on a user message
+  branches before it, like editing it). Without it a fork clones the session
+  tip and inherits every completed turn. Providers that can only clone a whole
+  session accept an anchor only on the source's latest turn. Isolated forks
   create a fresh managed worktree (or personal workspace for personal threads);
   reuse attaches the source environment. Omit --prompt to create an idle fork.
 
@@ -135,8 +142,13 @@ Inspecting:
   bb thread log [id]                       Show thread event log
     --self                                 Target current thread
     --format <format>                      Output format: json, minimal, verbose
-    --limit <count>                        Limit entries
-    --after-seq <seq>                      Paginate after sequence number
+    --limit <count>                        Max entries: events for json (oldest first, default 100);
+                                           user-message turns for minimal/verbose (newest first, default 20, max 100)
+    --after-seq <seq>                      Paginate after sequence number (json only)
+    --all                                  Print the whole thread, paging through every entry
+
+  Human formats end with a notice when older history was omitted; --json warns
+  on stderr when more events exist beyond the printed page.
 
   bb thread output [id]                    Get the final output of a thread
     --self                                 Target current thread
@@ -175,12 +187,22 @@ Messaging:
     --mode <mode>                          Message mode: steer (default), queue, or auto
     --model <model>                        Model override for this turn
     --reasoning-level <level>              Reasoning level override
+    --plan                                 Send the message as the provider's /plan action
     --file <path>                          Host-readable absolute or uploaded file path
     --image <path>                         Host-readable absolute or uploaded image path
 
   Tell steers by default, delivering the message immediately into the active
   turn. Use --mode queue for non-urgent follow-ups that can wait until the agent
   is free.
+
+  --plan sends the same structured /plan command the composer's plan action
+  sends, so the agent proposes a plan for approval before executing (Claude
+  Code and Codex threads). Plain "/plan ..." text is not recognized; it reaches
+  the provider as literal text. Approve or deny the proposed plan with
+  `bb thread interactions`; `bb thread cancel-plan` leaves Plan mode early.
+  SDK callers build the same input with
+  `createBuiltinPlanCommandTextInput(text)` from `@bb/sdk` and pass it as
+  `input` to `threads.spawn` or `threads.send`.
 
   bb thread stop [id]                      Stop work and release the agent runtime
   bb thread compact [id]                   Request compaction of an idle or errored thread's context

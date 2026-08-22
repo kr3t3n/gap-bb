@@ -3,10 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listSystemProviderInfos } from "../../../src/services/system/execution-options.js";
-import {
-  resolveCreateThreadExecutionDefaults,
-  resolveWorkflowsEnabledPolicy,
-} from "../../../src/services/threads/thread-default-policy.js";
+import { resolveCreateThreadExecutionDefaults } from "../../../src/services/threads/thread-default-policy.js";
 import { withTestHarness } from "../../helpers/test-app.js";
 
 /**
@@ -57,7 +54,7 @@ async function writePlugin(
 
 const REGISTER_PROVIDER_SOURCE = (id: string): string => `
   export default function plugin(bb: any) {
-    bb.agents.experimental_registerProvider({
+    bb.providers.register({
       id: ${JSON.stringify(id)},
       displayName: "My Remote Agent",
       icon: "./icons/agent.svg",
@@ -71,7 +68,6 @@ const REGISTER_PROVIDER_SOURCE = (id: string): string => `
         supportsManualCompaction: true,
         supportsThreadArchive: false,
         supportsThreadRename: false,
-        supportsWorkflows: false,
         permissionModes: ["accept-edits", "full"],
         reasoningLevels: ["low", "medium", "high"],
       },
@@ -80,7 +76,7 @@ const REGISTER_PROVIDER_SOURCE = (id: string): string => `
   }
 `;
 
-describe("bb.agents.experimental_registerProvider (server)", () => {
+describe("bb.providers.register (server)", () => {
   let workDir: string;
 
   beforeEach(async () => {
@@ -133,7 +129,6 @@ describe("bb.agents.experimental_registerProvider (server)", () => {
           ],
         },
         serverCapabilities: {
-          supportsWorkflows: false,
           reasoningLevels: ["low", "medium", "high"],
         },
       });
@@ -223,9 +218,8 @@ describe("bb.agents.experimental_registerProvider (server)", () => {
       const registry = harness.deps.providerRegistry;
 
       // The policy layer answers from the plugin declaration: create-thread
-      // default resolution accepts the plugin provider id, the permission
-      // modes come from the declaration, and the workflows policy reads the
-      // mapped server capabilities (always false for plugin providers today).
+      // default resolution accepts the plugin provider id and the permission
+      // modes come from the declaration.
       const resolved = resolveCreateThreadExecutionDefaults(registry, {
         requestedProviderId: "policy-agent",
         storedDefaults: null,
@@ -234,9 +228,6 @@ describe("bb.agents.experimental_registerProvider (server)", () => {
       expect(
         registry.getSupportedPermissionModes("policy-agent"),
       ).not.toBeNull();
-      expect(resolveWorkflowsEnabledPolicy(registry, "policy-agent")).toBe(
-        false,
-      );
       // A fuller proof (POST /threads through the route) needs a faked
       // daemon host session; these policy calls are the slice that gated
       // plugin providers before the repoint.
@@ -289,11 +280,10 @@ describe("bb.agents.experimental_registerProvider (server)", () => {
     });
   });
 
-  // Reservation, not just collision: the id belongs to provider-codex even
-  // when nothing has registered it (the plugin is disabled, or failed), and
-  // for a daemon-bundled id like pi the host would otherwise run bb's own
-  // bridge under the impostor's metadata.
-  it("rejects a first-party id claimed by another plugin as a load failure", async () => {
+  // Flat ids: no reservation table. The first live registration wins, so a
+  // later plugin claiming a first-party id collides with the incumbent and
+  // fails its load — and once the incumbent is disabled, the id is free.
+  it("rejects a live id claimed by another plugin as a load failure", async () => {
     await withTestHarness(async (harness) => {
       const rootDir = await writePlugin(workDir, {
         name: "bb-plugin-shadow-codex",
@@ -302,7 +292,7 @@ describe("bb.agents.experimental_registerProvider (server)", () => {
       const entry = await harness.pluginService.installPath(rootDir);
       expect(entry.status).toBe("error");
       expect(entry.statusDetail).toContain(
-        'Provider "codex" is reserved for the "provider-codex" plugin',
+        'Provider "codex" is already registered; a plugin cannot shadow an existing provider.',
       );
       // The incumbent registration is untouched and the failed plugin
       // contributed nothing.

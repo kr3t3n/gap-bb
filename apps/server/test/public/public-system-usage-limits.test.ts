@@ -84,7 +84,6 @@ describe("GET /api/v1/system/usage-limits", () => {
           composerActions: [],
         },
         serverCapabilities: {
-          supportsWorkflows: false,
           reasoningLevels: ["medium"],
           fork: "none",
           supportsManualCompaction: false,

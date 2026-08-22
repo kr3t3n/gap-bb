@@ -509,4 +509,41 @@ describe("MarkdownPreview", () => {
     );
     expect(container.textContent).toContain("keeps rendering.");
   });
+
+  it("closes a display math block whose `$$` delimiters are glued to the TeX (#1778)", async () => {
+    // `$$T_…` opens a math fence with the TeX as dropped meta and a trailing
+    // `…$$` never closes it, so the rest of the message used to render as one
+    // `.katex-error`.
+    const { container } = render(
+      <MarkdownPreview
+        content={[
+          "Before the formula.",
+          "",
+          "$$T_{\\text{appearance}\\rightarrow\\text{chunk}}",
+          "\\approx73\\text{--}146\\text{ ms}$$",
+          "",
+          "## Content after the formula",
+          "",
+          "- This should remain a list item.",
+          "- [This should remain a link](https://example.com).",
+        ].join("\n")}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(container.querySelector(".katex-display")).not.toBeNull(),
+    );
+    expect(container.querySelector(".katex-error")).toBeNull();
+    // The first formula line is rendered, not dropped as fence meta.
+    expect(
+      container.querySelector(".katex-display annotation")?.textContent,
+    ).toContain("appearance");
+    expect(container.querySelector("h2")?.textContent).toBe(
+      "Content after the formula",
+    );
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(
+      container.querySelector('a[href="https://example.com"]')?.textContent,
+    ).toBe("This should remain a link");
+  });
 });

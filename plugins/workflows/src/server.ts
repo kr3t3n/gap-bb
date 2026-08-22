@@ -139,6 +139,10 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "bb_workflow_run",
+    experimental_presentation: {
+      label: { pending: "Starting workflow", completed: "Started workflow" },
+      icon: { glyph: "Workflow" },
+    },
     description:
       "Execute a workflow script that orchestrates multiple subagents deterministically. Workflows run in the background — this tool returns immediately with a run ID and a `previewDirective`. After a successful call, emit that directive exactly once on its own line (not in a code fence) so BB renders live progress in chat. A completion notification is sent to the origin thread. Use `bb workflows status <run-id>` for a compact summary. For detailed history, redirect a bounded JSONL page from `bb workflows history <run-id> --cursor <call-index> --limit <1-100>` into `$BB_THREAD_STORAGE`, then inspect the file with normal filesystem tools.",
     parameters: runInputSchema,
@@ -169,6 +173,16 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "bb_workflow_result",
+    // The structured result is the turn's deliverable; its tool row is
+    // bookkeeping beside it, so clients collapse the row by default.
+    experimental_presentation: {
+      label: {
+        pending: "Returning structured result",
+        completed: "Returned structured result",
+      },
+      icon: { glyph: "Workflow" },
+      suppress: true,
+    },
     description:
       'Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response with {"value": ...} to provide the structured output.',
     parameters: resultInputSchema,

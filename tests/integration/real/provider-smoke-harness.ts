@@ -476,7 +476,7 @@ export function hasAssistantTimelineMessage(
 
 export async function createRealThread(args: CreateRealThreadArgs) {
   await assertProviderPrerequisites(args.providerId);
-  const harness = await createIntegrationHarness({ adapterFactory: undefined });
+  const harness = await createIntegrationHarness();
   const project = await createProjectFixture(harness, {
     name: `Real Provider ${args.providerId}`,
   });
@@ -485,9 +485,7 @@ export async function createRealThread(args: CreateRealThreadArgs) {
       harness,
       providerId: args.providerId,
     }),
-    input: [
-      { type: "text", text: REAL_PROVIDER_BOOTSTRAP_TEXT, mentions: [] },
-    ],
+    input: [{ type: "text", text: REAL_PROVIDER_BOOTSTRAP_TEXT, mentions: [] }],
     projectId: project.id,
     providerId: args.providerId,
     timeoutMs: TURN_TIMEOUT_MS,

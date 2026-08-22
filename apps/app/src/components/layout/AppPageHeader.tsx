@@ -95,7 +95,7 @@ export function AppPageHeader({
         CHROME_ROW_HEIGHT_CLASS,
         HEADER_SEAM_CLASS,
         APP_PAGE_HEADER_SURFACE_CLASS,
-        "relative shrink-0 px-4",
+        "relative shrink-0 select-none px-4",
         usesDesktopChrome && isWindowDragRegion && MACOS_WINDOW_DRAG_CLASS,
         className,
       )}

@@ -735,15 +735,30 @@ jobs:
     with:
       profile: production
       submit: true
-      # The reusable workflow keeps the numeric base (0.38.1 for
-      # 0.38.1-nightly.N.M); iOS rejects prerelease version strings.
-      version: ${{ needs.publish-nightly.outputs.version || needs.publish.outputs.version }}
+      # An empty version keeps the marketing version committed in
+      # apps/mobile/app.json. TestFlight needs a Beta App Review for the
+      # first build of each new marketing version, so a nightly that tracked
+      # the bb-app version (0.39.0, 0.39.1, ...) blocked external testers
+      # every time the base version moved. With a pinned version, the remote
+      # EAS build number tells nightly builds apart and later builds skip
+      # the review.
+      version: ""
+      external_group: External testers
     secrets:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
 
   nightly-desktop-publish:
     name: Publish bb Nightly desktop
+    # See the macOS job for why this condition uses `!cancelled()`. GitHub
+    # propagates a skip transitively, so the skipped publish-nightly reaches
+    # this job through the build jobs even though they run. Without the
+    # override this job is skipped on exactly the paths that exist to produce
+    # a nightly, and only a stable release run ever moves the release.
+    if: >-
+      ${{ !cancelled()
+      && needs.nightly-desktop-macos.result == 'success'
+      && needs.nightly-desktop-linux.result == 'success' }}
     needs:
       - nightly-desktop-macos
       - nightly-desktop-linux

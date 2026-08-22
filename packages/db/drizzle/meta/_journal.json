@@ -740,8 +740,22 @@
     {
       "idx": 105,
       "version": "6",
-      "when": 1787276496057,
-      "tag": "0105_flaky_luminals",
+      "when": 1787288444172,
+      "tag": "0105_provider_settings_to_plugins",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "6",
+      "when": 1787305850786,
+      "tag": "0106_thread_state_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "6",
+      "when": 1787373788033,
+      "tag": "0107_glorious_hellion",
       "breakpoints": true
     }
   ]

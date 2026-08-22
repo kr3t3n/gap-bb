@@ -24,6 +24,7 @@ describe("packed plugin SDK exports", () => {
     expect(Object.keys(packageJson.exports)).toEqual([
       ".",
       "./provider-bridge",
+      "./provider-bridge/testing",
       "./app",
       "./host",
       "./internal/composer-customization-validation",

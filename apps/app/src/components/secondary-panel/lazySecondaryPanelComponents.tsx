@@ -35,6 +35,7 @@ type ThreadTerminalPanelModule =
 type BrowserTabDeckModule = typeof import("./BrowserTabDeck");
 type NewTabPageModule = typeof import("./NewTabPage");
 type FilePreviewModule = typeof import("./FilePreview");
+type ThreadStorageFileTreeModule = typeof import("./ThreadStorageFileTree");
 
 const ThreadSecondaryPanelChunk = lazy(() =>
   import("./ThreadSecondaryPanel").then(({ ThreadSecondaryPanel }) => ({
@@ -57,6 +58,11 @@ const NewTabPageChunk = lazy(() =>
 const FilePreviewChunk = lazy(() =>
   import("./FilePreview").then(({ FilePreview }) => ({
     default: FilePreview,
+  })),
+);
+const ThreadStorageFileTreeChunk = lazy(() =>
+  import("./ThreadStorageFileTree").then(({ ThreadStorageFileTree }) => ({
+    default: ThreadStorageFileTree,
   })),
 );
 const WorkspaceFilePreviewTabContentChunk = lazy(() =>
@@ -231,6 +237,25 @@ export function LazyFilePreview(
   return (
     <Suspense fallback={<SecondaryPanelContentSkeleton />}>
       <FilePreviewChunk {...props} />
+    </Suspense>
+  );
+}
+
+/**
+ * The storage browser's `@pierre/trees` tree. Its model comes from the same
+ * chunk (`useThreadStorageBrowser` imports it to build the model), so by the
+ * time a caller has a model to render the chunk is already loaded and the
+ * fallback shows for at most one commit.
+ */
+export function LazyThreadStorageFileTree({
+  fallback,
+  ...props
+}: ComponentProps<ThreadStorageFileTreeModule["ThreadStorageFileTree"]> & {
+  fallback: ReactNode;
+}) {
+  return (
+    <Suspense fallback={fallback}>
+      <ThreadStorageFileTreeChunk {...props} />
     </Suspense>
   );
 }

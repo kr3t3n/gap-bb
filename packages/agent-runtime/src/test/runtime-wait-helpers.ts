@@ -209,17 +209,31 @@ export async function waitForRuntimeThreadEvent(
   });
 }
 
+/**
+ * Resolves with the matching `turn/started` and its assembler-minted turn id
+ * — the id the runtime's command plane and interaction requests speak, which
+ * a test cannot know up front.
+ */
 export async function waitForThreadTurnStarted(
   args: RuntimeThreadTurnStartedWaitArgs,
-): Promise<void> {
+): Promise<{ event: ThreadEvent; turnId: string }> {
+  const predicate = (event: ThreadEvent): boolean =>
+    event.type === "turn/started" &&
+    event.threadId === args.threadId &&
+    (!args.turnId || getThreadEventScopeTurnId(event.scope) === args.turnId);
   await waitForRuntimeThreadEvent({
     ...args,
     label: args.label ?? `turn/started for ${args.threadId}`,
-    predicate: (event) =>
-      event.type === "turn/started" &&
-      event.threadId === args.threadId &&
-      (!args.turnId || getThreadEventScopeTurnId(event.scope) === args.turnId),
+    predicate,
   });
+  const event = args.events.find(predicate);
+  const turnId = event ? getThreadEventScopeTurnId(event.scope) : undefined;
+  if (!event || turnId === undefined) {
+    throw new Error(
+      `turn/started for ${args.threadId} vanished after it was observed`,
+    );
+  }
+  return { event, turnId };
 }
 
 export async function waitForThreadTurnCompleted(

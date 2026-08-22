@@ -51,6 +51,9 @@ export function formatPendingInteractionSummary(
       return "File changes pending approval";
     case "plan":
       return "Plan ready for review";
+    // Declarative base only: no producer emits this subject until WS5.
+    case "tool_use":
+      return interaction.payload.subject.presentation.label.pending;
     case "permission_grant":
       break;
     default:

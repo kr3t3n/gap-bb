@@ -21,28 +21,28 @@ import { isLiveParentThread, type ParentThread } from "./thread-parent.js";
 export const DEFAULT_SERVICE_TIER: ServiceTier = "default";
 export const DEFAULT_REASONING_LEVEL: ReasoningLevel = "medium";
 
-/**
- * Whether provider sessions get the Workflows feature (dynamic multi-agent
- * orchestration). Server-owned product policy that reads the provider's
- * `supportsWorkflows` capability fact: the Workflow tool's own opt-in rules
- * govern when the model actually uses it, and the feature is meaningless for
- * providers without the concept. Host-level user/org disables still win inside
- * the CLI.
- */
-export function resolveWorkflowsEnabledPolicy(
-  registry: ProviderRegistryService,
-  providerId: string,
-): boolean {
-  return registry.getServerCapabilities(providerId)?.supportsWorkflows ?? false;
-}
 const DEFAULT_PERMISSION_MODE: PermissionMode = "auto";
 
-function requireProductDefaultProviderId(
-  registry: ProviderRegistryService,
-): string {
-  const providerId = registry
-    .list()
-    .find((registration) => registration.info.available)?.info.id;
+/**
+ * The default provider, used when neither the caller nor the project has
+ * chosen one: the user's `defaultProviderId` setting when it names an
+ * available provider, else the first available entry of the registry listing
+ * (the user's `providerOrder`, then plugin install order). Providers come only
+ * from plugin declarations, so an install with every provider plugin disabled
+ * has no default at all.
+ */
+function requireDefaultProviderId(registry: ProviderRegistryService): string {
+  const listed = registry.list();
+  const preferred = registry.getUserDefaultProviderId();
+  const providerId =
+    (preferred !== null
+      ? listed.find(
+          (registration) =>
+            registration.info.id === preferred && registration.info.available,
+        )
+      : undefined
+    )?.info.id ??
+    listed.find((registration) => registration.info.available)?.info.id;
   if (providerId === undefined) {
     // Reachable for real now that providers are plugin-only: disabling every
     // provider plugin leaves nothing to start a thread with. Say so, instead
@@ -175,7 +175,7 @@ export function resolveCreateThreadExecutionDefaults(
   const providerId =
     args.requestedProviderId ??
     args.storedDefaults?.providerId ??
-    requireProductDefaultProviderId(registry);
+    requireDefaultProviderId(registry);
   const registration = registry.get(providerId);
   if (registration !== null && !registration.info.available) {
     throw new ApiError(

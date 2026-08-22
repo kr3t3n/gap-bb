@@ -77,7 +77,7 @@ export interface PluginServiceDeps {
     hostId: string,
   ) => Promise<HostDaemonConnectTunnelIdentity>;
   /** Omitted only by isolated plugin tests that exercise no provider surface;
-   * `bb.agents.experimental_registerProvider` throws without it. */
+   * `bb.providers.register` throws without it. */
   providerRegistry?: ProviderRegistryService;
   /** Live provider-bridge artifacts, shared with the internal routes and
    * thread commands. Omitted only by isolated plugin tests that exercise no

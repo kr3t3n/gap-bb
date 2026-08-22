@@ -21,6 +21,7 @@ import {
   type ProviderRateLimitWindow,
   providerRawEventSchema,
   type DeltaItemShape,
+  type DeltaPresentation,
   type ProviderRawEvent,
   type ThreadDelta,
   type ThreadEventItemStatus,
@@ -42,18 +43,77 @@ import {
   type CodexRateLimitSnapshotUpdate,
   type CodexTurnStatus,
 } from "./schemas.js";
+import {
+  AGENT_MESSAGE_PRESENTATION,
+  COMPACTION_PRESENTATION,
+  PLAN_PRESENTATION,
+  REASONING_PRESENTATION,
+  collabAgentPresentation,
+  commandPresentation,
+  dynamicToolPresentation,
+  fileChangePresentation,
+  imageViewPresentation,
+  mcpToolPresentation,
+  planStepsPresentation,
+  webFetchPresentation,
+  webSearchPresentation,
+} from "./presentation.js";
+import {
+  CODEX_GOAL_EXTENSION_KIND,
+  type CodexGoalState,
+} from "./extension-kinds.js";
 import { codexVisibilityMetadata } from "./visibility.js";
 
 function assertNever(value: never): never {
   throw new Error(`Unexpected value: ${String(value)}`);
 }
 
+/**
+ * A bb-injected tool the session was constructed with (Q31). The definition
+ * carries its presentation once the server resolved one; a definition from
+ * before the field existed presents generically.
+ */
+export interface CodexInjectedTool {
+  name: string;
+  presentation?: DeltaPresentation;
+}
+
+/**
+ * The structured classification Codex attached to a retried failure, keyed by
+ * `threadId\0turnId`. Codex labels every reconnect attempt with the specific
+ * error info (for example `responseStreamDisconnected`) but downgrades the
+ * terminal error for the same failure to `other` once its retry budget is
+ * exhausted, so the bridge carries the retry-time classification forward.
+ */
+interface CodexRetryErrorContext {
+  errorInfo: CodexErrorInfo;
+  failureText: string;
+}
+
 interface CodexEventTranslationState {
   rateLimits: CodexRateLimitSnapshot | null;
+  /**
+   * The bb-injected tools of the session, by name. A `dynamicToolCall` to one
+   * of them is a bb tool (`server: "bb"`) and reads the way its definition
+   * says; every other dynamic tool call is codex's own.
+   */
+  injectedToolsByName: Map<string, CodexInjectedTool>;
+  retryErrorsByTurnKey: Map<string, CodexRetryErrorContext>;
 }
 
 export function createCodexEventTranslationState(): CodexEventTranslationState {
-  return { rateLimits: null };
+  return {
+    rateLimits: null,
+    injectedToolsByName: new Map(),
+    retryErrorsByTurnKey: new Map(),
+  };
+}
+
+export function setCodexInjectedTools(
+  state: CodexEventTranslationState,
+  tools: readonly CodexInjectedTool[],
+): void {
+  state.injectedToolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 }
 
 function clampRateLimitPercent(value: number): number {
@@ -202,12 +262,14 @@ function normalizeCodexRateLimits(
 }
 
 type CodexErrorEvent = Extract<CodexHandledEvent, { method: "error" }>;
-type CodexErrorPayload = CodexErrorEvent["params"]["error"];
+type CodexErrorParams = CodexErrorEvent["params"];
 
 type CodexItemTranslationResult =
   | {
       kind: "translated";
       shape: DeltaItemShape;
+      /** How the row reads (grammar v3); restated on every open and close. */
+      presentation: DeltaPresentation;
       status: ThreadEventItemStatus;
       approvalDenied: boolean;
     }
@@ -304,9 +366,8 @@ function getProviderErrorCategory(
 }
 
 function toProviderErrorInfo(
-  error: CodexErrorPayload,
+  errorInfo: CodexErrorInfo | null | undefined,
 ): ProviderErrorInfo | null {
-  const errorInfo = error.codexErrorInfo;
   if (!errorInfo) {
     return null;
   }
@@ -315,6 +376,63 @@ function toProviderErrorInfo(
     providerCode: getCodexErrorProviderCode(errorInfo),
     httpStatusCode: getCodexErrorHttpStatusCode(errorInfo),
   };
+}
+
+function codexTurnKey(scope: { threadId: string; turnId?: string }): string {
+  return `${scope.threadId}\0${scope.turnId ?? ""}`;
+}
+
+function takeCodexRetryError(
+  state: CodexEventTranslationState,
+  scope: { threadId: string; turnId?: string },
+): CodexRetryErrorContext | undefined {
+  const key = codexTurnKey(scope);
+  const retryError = state.retryErrorsByTurnKey.get(key);
+  state.retryErrorsByTurnKey.delete(key);
+  return retryError;
+}
+
+export function clearCodexEventTranslationThreadState(
+  state: CodexEventTranslationState,
+  threadId: string,
+): void {
+  const prefix = codexTurnKey({ threadId });
+  for (const key of state.retryErrorsByTurnKey.keys()) {
+    if (key.startsWith(prefix)) {
+      state.retryErrorsByTurnKey.delete(key);
+    }
+  }
+}
+
+/**
+ * Codex reports the underlying failure in `additionalDetails` while it is
+ * retrying ("Reconnecting... n/m"), then moves the same text to `message` and
+ * downgrades `codexErrorInfo` to `other` on the terminal event. Correlate the
+ * two by failure text, scoped to the turn, so the terminal error keeps the
+ * structured classification without interpreting provider prose.
+ */
+function resolveCodexErrorInfo(
+  state: CodexEventTranslationState,
+  params: CodexErrorParams,
+): CodexErrorInfo | null | undefined {
+  const errorInfo = params.error.codexErrorInfo;
+  const failureText = params.error.additionalDetails ?? params.error.message;
+  if (params.willRetry === true) {
+    if (errorInfo && errorInfo !== "other") {
+      state.retryErrorsByTurnKey.set(codexTurnKey(params), {
+        errorInfo,
+        failureText,
+      });
+    }
+    return errorInfo;
+  }
+  if (params.willRetry !== false) {
+    return errorInfo;
+  }
+  const retryError = takeCodexRetryError(state, params);
+  return errorInfo === "other" && retryError?.failureText === failureText
+    ? retryError.errorInfo
+    : errorInfo;
 }
 
 function toRawEvent(rawEvent: JsonRpcMessage): ProviderRawEvent {
@@ -472,9 +590,14 @@ function normalizeCodexUrl(args: CodexUrlArgs): string | null {
   return url ?? null;
 }
 
+interface CodexWebItemTranslation {
+  shape: DeltaItemShape;
+  presentation: DeltaPresentation;
+}
+
 function normalizeCodexWebItemShape(
   item: Extract<CodexHandledThreadItem, { type: "webSearch" }>,
-): DeltaItemShape | null {
+): CodexWebItemTranslation | null {
   if (!item.action) {
     return null;
   }
@@ -489,21 +612,30 @@ function normalizeCodexWebItemShape(
       if (!queries) {
         return null;
       }
-      return { type: "webSearch", queries };
+      return {
+        shape: { type: "webSearch", queries },
+        presentation: webSearchPresentation(queries),
+      };
     }
     case "openPage": {
       const url = normalizeCodexUrl({ actionUrl: item.action.url });
       if (!url) {
         return null;
       }
-      return { type: "webFetch", url, pattern: null };
+      return {
+        shape: { type: "webFetch", url, pattern: null },
+        presentation: webFetchPresentation(url),
+      };
     }
     case "findInPage": {
       const url = normalizeCodexUrl({ actionUrl: item.action.url });
       if (!url) {
         return null;
       }
-      return { type: "webFetch", url, pattern: item.action.pattern ?? null };
+      return {
+        shape: { type: "webFetch", url, pattern: item.action.pattern ?? null },
+        presentation: webFetchPresentation(url),
+      };
     }
     case "other":
       return null;
@@ -531,7 +663,56 @@ function toolStatusFields(status: CodexItemStatus): {
   };
 }
 
-function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
+/** Provider-anonymous key for the plan-steps snapshots of a thread. */
+const PLAN_STEPS_CHANNEL = "planSteps";
+
+/** The `server` a bb-injected tool call carries (Q31). */
+const BB_TOOL_SERVER = "bb";
+
+function isTerminalCodexItemStatus(status: CodexItemStatus): boolean {
+  return status !== "inProgress";
+}
+
+type CodexCollabAgentToolCall = Extract<
+  CodexHandledThreadItem,
+  { type: "collabAgentToolCall" }
+>;
+
+const COLLAB_DELEGATION_VERBS: Readonly<Record<string, string>> = {
+  spawnAgent: "Spawn agent",
+  wait: "Wait for agent",
+  resumeAgent: "Resume agent",
+  sendInput: "Send input to agent",
+  closeAgent: "Close agent",
+};
+
+/** The delegation's human label: the prompt when the call carries one. */
+function collabDelegationLabel(item: CodexCollabAgentToolCall): string {
+  if (item.prompt !== null && item.prompt.trim().length > 0) {
+    return item.prompt.trim();
+  }
+  return COLLAB_DELEGATION_VERBS[item.tool] ?? item.tool;
+}
+
+/**
+ * The child's terminal summary as codex reports it: `agentsStates` maps each
+ * agent thread id to its final state (a status string or a structured
+ * record). Rendered as one line per agent; absent when codex reported none.
+ */
+function summarizeCollabAgentsStates(
+  agentsStates: Record<string, unknown>,
+): string | undefined {
+  const lines = Object.entries(agentsStates).map(([agentThreadId, state]) => {
+    const rendered = typeof state === "string" ? state : JSON.stringify(state);
+    return `${agentThreadId}: ${rendered}`;
+  });
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+function translateCodexItemShape(
+  item: unknown,
+  state: CodexEventTranslationState,
+): CodexItemTranslationResult {
   const parsed = codexHandledThreadItemSchema.safeParse(item);
   if (!parsed.success) {
     return { kind: "unhandled" };
@@ -543,6 +724,7 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
       return {
         kind: "translated",
         shape: { type: "agentMessage", text: parsedItem.text },
+        presentation: AGENT_MESSAGE_PRESENTATION,
         status: "completed",
         approvalDenied: false,
       };
@@ -567,6 +749,7 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
             ? {}
             : { durationMs: parsedItem.durationMs }),
         },
+        presentation: commandPresentation(parsedItem.command),
         ...toolStatusFields(parsedItem.status),
       };
     case "fileChange":
@@ -583,6 +766,9 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
             ...(change.diff ? { diff: change.diff } : {}),
           })),
         },
+        presentation: fileChangePresentation(
+          parsedItem.changes.map((change) => change.path),
+        ),
         ...toolStatusFields(parsedItem.status),
       };
     case "mcpToolCall":
@@ -598,33 +784,77 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
           ...(parsedItem.error?.message === undefined
             ? {}
             : { error: parsedItem.error.message }),
-          ...(parsedItem.durationMs === null || parsedItem.durationMs === undefined
+          ...(parsedItem.durationMs === null ||
+          parsedItem.durationMs === undefined
             ? {}
             : { durationMs: parsedItem.durationMs }),
         },
+        presentation: mcpToolPresentation({
+          server: parsedItem.server,
+          tool: parsedItem.tool,
+          args: parsedItem.arguments,
+        }),
         ...toolStatusFields(parsedItem.status),
       };
     case "dynamicToolCall": {
       const result = extractDynamicToolCallResult(parsedItem.contentItems);
       const error = buildDynamicToolCallError(parsedItem.success, result);
+      // A dynamic tool bb injected at session construction is a bb tool:
+      // `server: "bb"` names its origin and its definition says how the row
+      // reads, so no tool-name table is needed anywhere downstream.
+      const injected = state.injectedToolsByName.get(parsedItem.tool);
       return {
         kind: "translated",
         shape: {
           type: "tool",
+          ...(injected === undefined ? {} : { server: BB_TOOL_SERVER }),
           tool: parsedItem.tool,
           ...(parsedItem.arguments === undefined
             ? {}
             : { args: parsedItem.arguments }),
           ...(result === undefined ? {} : { result }),
           ...(error === undefined ? {} : { error }),
-          ...(parsedItem.durationMs === null || parsedItem.durationMs === undefined
+          ...(parsedItem.durationMs === null ||
+          parsedItem.durationMs === undefined
             ? {}
             : { durationMs: parsedItem.durationMs }),
         },
+        presentation:
+          injected?.presentation ?? dynamicToolPresentation(parsedItem.tool),
         ...toolStatusFields(parsedItem.status),
       };
     }
-    case "collabAgentToolCall":
+    case "collabAgentToolCall": {
+      const presentation = collabAgentPresentation({
+        tool: parsedItem.tool,
+        prompt: parsedItem.prompt,
+      });
+      const childRef = parsedItem.receiverThreadIds[0];
+      if (childRef !== undefined && childRef.length > 0) {
+        // A collab call that names its child agent IS a delegation to it
+        // (grammar v3): spawnAgent/resumeAgent/sendInput with a receiver,
+        // and a wait/closeAgent scoped to one agent. The child's own turns
+        // link back through the call id as their parentRef.
+        return {
+          kind: "translated",
+          shape: {
+            type: "delegation",
+            childRef,
+            label: collabDelegationLabel(parsedItem),
+            background: false,
+            ...(isTerminalCodexItemStatus(parsedItem.status)
+              ? {
+                  summary: summarizeCollabAgentsStates(parsedItem.agentsStates),
+                }
+              : {}),
+          },
+          presentation,
+          ...toolStatusFields(parsedItem.status),
+        };
+      }
+      // Without a receiver there is no child to delegate to: codex's bare
+      // `wait` (wait for every agent) and `closeAgent` stay generic tool
+      // calls, presented as the collab verb they are.
       return {
         kind: "translated",
         shape: {
@@ -641,8 +871,10 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
           },
           result: parsedItem.agentsStates,
         },
+        presentation,
         ...toolStatusFields(parsedItem.status),
       };
+    }
     case "subAgentActivity":
       // The translator handles this statefully so it can correlate the
       // activity with the child turn and close the synthetic delegation row.
@@ -651,15 +883,22 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
       if (shouldIgnoreCodexWebItem(parsedItem)) {
         return { kind: "ignored" };
       }
-      const shape = normalizeCodexWebItemShape(parsedItem);
-      return shape
-        ? { kind: "translated", shape, status: "completed", approvalDenied: false }
+      const translation = normalizeCodexWebItemShape(parsedItem);
+      return translation
+        ? {
+            kind: "translated",
+            shape: translation.shape,
+            presentation: translation.presentation,
+            status: "completed",
+            approvalDenied: false,
+          }
         : { kind: "unhandled" };
     }
     case "imageView":
       return {
         kind: "translated",
         shape: { type: "imageView", path: parsedItem.path },
+        presentation: imageViewPresentation(parsedItem.path),
         status: "completed",
         approvalDenied: false,
       };
@@ -671,6 +910,7 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
           summary: parsedItem.summary,
           content: parsedItem.content,
         },
+        presentation: REASONING_PRESENTATION,
         status: "completed",
         approvalDenied: false,
       };
@@ -678,6 +918,7 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
       return {
         kind: "translated",
         shape: { type: "plan", text: parsedItem.text },
+        presentation: PLAN_PRESENTATION,
         status: "completed",
         approvalDenied: false,
       };
@@ -685,6 +926,7 @@ function translateCodexItemShape(item: unknown): CodexItemTranslationResult {
       return {
         kind: "translated",
         shape: { type: "compaction" },
+        presentation: COMPACTION_PRESENTATION,
         status: "completed",
         approvalDenied: false,
       };
@@ -734,6 +976,10 @@ export function translateCodexEventToDeltas(
         { kind: "turn.open", providerTurnId: handledEvent.params.turn.id },
       ];
     case "turn/completed": {
+      takeCodexRetryError(state, {
+        threadId: handledEvent.params.threadId,
+        turnId: handledEvent.params.turn.id,
+      });
       const status = toTurnStatus(handledEvent.params.turn.status);
       return [
         {
@@ -784,22 +1030,38 @@ export function translateCodexEventToDeltas(
           providerTurnId: handledEvent.params.turnId,
         },
       ];
-    case "thread/goal/updated":
+    case "thread/goal/updated": {
+      // Codex's Goal is codex vocabulary: a `provider-codex/goal` thread
+      // state snapshot (latest wins), not a core event.
+      const goal: CodexGoalState = {
+        objective: handledEvent.params.goal.objective,
+        status: handledEvent.params.goal.status,
+        tokenBudget: handledEvent.params.goal.tokenBudget,
+        tokensUsed: handledEvent.params.goal.tokensUsed,
+        timeUsedSeconds: handledEvent.params.goal.timeUsedSeconds,
+      };
       return [
         {
-          kind: "thread.goal",
-          objective: handledEvent.params.goal.objective,
-          status: handledEvent.params.goal.status,
-          tokenBudget: handledEvent.params.goal.tokenBudget,
-          tokensUsed: handledEvent.params.goal.tokensUsed,
-          timeUsedSeconds: handledEvent.params.goal.timeUsedSeconds,
+          kind: "extension.state",
+          extensionKind: CODEX_GOAL_EXTENSION_KIND,
+          payload: goal,
         },
       ];
+    }
     case "thread/goal/cleared":
-      return [{ kind: "thread.goalCleared" }];
+      return [
+        {
+          kind: "extension.state",
+          extensionKind: CODEX_GOAL_EXTENSION_KIND,
+          payload: null,
+        },
+      ];
     case "item/started":
     case "item/completed": {
-      const translation = translateCodexItemShape(handledEvent.params.item);
+      const translation = translateCodexItemShape(
+        handledEvent.params.item,
+        state,
+      );
       if (translation.kind === "ignored") {
         return [];
       }
@@ -817,6 +1079,7 @@ export function translateCodexEventToDeltas(
             kind: "item.open",
             key,
             item: translation.shape,
+            presentation: translation.presentation,
             providerTurnId: handledEvent.params.turnId,
           },
         ];
@@ -828,6 +1091,7 @@ export function translateCodexEventToDeltas(
           status: translation.status,
           ...(translation.approvalDenied ? { approvalStatus: "denied" } : {}),
           item: translation.shape,
+          presentation: translation.presentation,
           providerTurnId: handledEvent.params.turnId,
         },
       ];
@@ -903,46 +1167,71 @@ export function translateCodexEventToDeltas(
           providerTurnId: handledEvent.params.turnId,
         },
       ];
-    case "thread/tokenUsage/updated":
+    case "thread/tokenUsage/updated": {
+      // Codex reports exact cumulative totals, so the `usage` delta forwards
+      // them verbatim; its `last.totalTokens` is also the context-window
+      // reading, which rides the `contextWindow` delta beside it (both scoped
+      // to the same vouched turn).
+      const { tokenUsage, turnId } = handledEvent.params;
       return [
         {
-          kind: "usage.exact",
+          kind: "usage",
           total: {
-            totalTokens: handledEvent.params.tokenUsage.total.totalTokens,
-            inputTokens: handledEvent.params.tokenUsage.total.inputTokens,
-            cachedInputTokens:
-              handledEvent.params.tokenUsage.total.cachedInputTokens,
-            outputTokens: handledEvent.params.tokenUsage.total.outputTokens,
-            reasoningOutputTokens:
-              handledEvent.params.tokenUsage.total.reasoningOutputTokens,
+            totalTokens: tokenUsage.total.totalTokens,
+            inputTokens: tokenUsage.total.inputTokens,
+            cachedInputTokens: tokenUsage.total.cachedInputTokens,
+            outputTokens: tokenUsage.total.outputTokens,
+            reasoningOutputTokens: tokenUsage.total.reasoningOutputTokens,
           },
           last: {
-            totalTokens: handledEvent.params.tokenUsage.last.totalTokens,
-            inputTokens: handledEvent.params.tokenUsage.last.inputTokens,
-            cachedInputTokens:
-              handledEvent.params.tokenUsage.last.cachedInputTokens,
-            outputTokens: handledEvent.params.tokenUsage.last.outputTokens,
-            reasoningOutputTokens:
-              handledEvent.params.tokenUsage.last.reasoningOutputTokens,
+            totalTokens: tokenUsage.last.totalTokens,
+            inputTokens: tokenUsage.last.inputTokens,
+            cachedInputTokens: tokenUsage.last.cachedInputTokens,
+            outputTokens: tokenUsage.last.outputTokens,
+            reasoningOutputTokens: tokenUsage.last.reasoningOutputTokens,
           },
-          modelContextWindow: handledEvent.params.tokenUsage.modelContextWindow,
-          providerTurnId: handledEvent.params.turnId,
+          modelContextWindow: tokenUsage.modelContextWindow,
+          providerTurnId: turnId,
+        },
+        {
+          kind: "contextWindow",
+          used: tokenUsage.last.totalTokens,
+          size: tokenUsage.modelContextWindow,
+          estimated: false,
+          attach: "currentOrLast",
+          providerTurnId: turnId,
         },
       ];
-    case "turn/plan/updated":
+    }
+    case "turn/plan/updated": {
+      // Codex's `update_plan` surfaces only as this turn-level notification,
+      // so each update is one settled `planSteps` snapshot (grammar v3): a
+      // channel-keyed close mints a fresh item per snapshot, and the latest
+      // one supersedes the rest — the same shape as a Claude TodoWrite call.
+      const steps = handledEvent.params.plan.map((step) => ({
+        step: step.step,
+        status:
+          step.status === "inProgress" ? ("active" as const) : step.status,
+      }));
+      const explanation = handledEvent.params.explanation;
       return [
         {
-          kind: "turn.plan",
-          steps: handledEvent.params.plan.map((step) => ({
-            step: step.step,
-            status: step.status === "inProgress" ? "active" : step.status,
-          })),
-          ...(handledEvent.params.explanation
-            ? { explanation: handledEvent.params.explanation }
-            : {}),
+          kind: "item.close",
+          key: { channel: PLAN_STEPS_CHANNEL },
+          status: "completed",
+          item: {
+            type: "planSteps",
+            steps,
+            ...(explanation ? { explanation } : {}),
+          },
+          presentation: planStepsPresentation({
+            steps,
+            explanation: explanation ?? null,
+          }),
           providerTurnId: handledEvent.params.turnId,
         },
       ];
+    }
     case "turn/diff/updated":
       return [
         {
@@ -952,7 +1241,9 @@ export function translateCodexEventToDeltas(
         },
       ];
     case "error": {
-      const errorInfo = toProviderErrorInfo(handledEvent.params.error);
+      const errorInfo = toProviderErrorInfo(
+        resolveCodexErrorInfo(state, handledEvent.params),
+      );
       return [
         {
           kind: "provider.error",

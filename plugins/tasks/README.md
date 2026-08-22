@@ -79,7 +79,8 @@ target another enrolled machine.
 | `bb tasks preset list\|create\|update\|delete` | Manage reusable agent execution presets.                                                                                                   |
 | `bb tasks delegate <key>`                      | Start and attach a new agent thread using a preset.                                                                                        |
 | `bb tasks attach <key-or-id>`                  | Attach the current bb thread to a task when it was not delegated from Tasks.                                                               |
-| `bb tasks threads <key>`                       | List the bb threads attached to a task.                                                                                                    |
+| `bb tasks detach <key-or-id>`                  | Detach the current bb thread (or `--thread <id>`) from a task, for example a dead predecessor after a respawn.                             |
+| `bb tasks threads <key>`                       | List the bb threads attached to a task: live threads first, newest first.                                                                  |
 | `bb tasks label create\|list\|delete`          | Manage project-scoped labels.                                                                                                              |
 | `bb tasks seed-demo --yes`                     | Create sample folders, projects, labels, tasks, and comments for evaluation.                                                               |
 
@@ -98,8 +99,8 @@ than traversing an inconsistent snapshot.
 
 Linking a Tasks project to a bb project enables delegation. Open a task, choose
 **Delegate**, select a preset, and optionally add instructions. A preset
-defines the provider, model, reasoning level, permission mode, and reusable
-instructions. Presets are user-defined, so create the worker profiles your team
+defines the provider, model, reasoning level, optional service tier, permission
+mode, and reusable instructions. Presets are user-defined, so create the worker profiles your team
 uses repeatedly before dispatching work.
 
 Delegation creates a worker thread in the linked bb project, attaches that
@@ -110,7 +111,11 @@ skill tells it to inspect the task, leave substantive milestone comments,
 attach artifacts, and move completed work to `in_review`.
 
 If work begins outside the Delegate action, the agent can associate its current
-thread with `bb tasks attach KEY`.
+thread with `bb tasks attach KEY`. The inverse is `bb tasks detach KEY
+[--thread <id>]`, and each thread card on the task page has a detach control;
+use either to drop a thread that died or moved on to other work. The task
+page and `bb tasks threads` list live threads before completed or failed ones,
+newest first.
 
 ## Task mentions
 

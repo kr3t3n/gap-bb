@@ -999,10 +999,10 @@ describe("realtime and status", () => {
   });
 });
 
-describe("agents.experimental_registerProvider", () => {
+describe("providers.register", () => {
   function agentDeclaration(
     overrides: Record<string, unknown> = {},
-  ): Parameters<BbPluginApi["agents"]["experimental_registerProvider"]>[0] {
+  ): Parameters<BbPluginApi["providers"]["register"]>[0] {
     return {
       id: "my-agent",
       displayName: "My Agent",
@@ -1017,18 +1017,17 @@ describe("agents.experimental_registerProvider", () => {
         supportsManualCompaction: true,
         supportsThreadArchive: false,
         supportsThreadRename: false,
-        supportsWorkflows: false,
         permissionModes: ["accept-edits", "full"],
         reasoningLevels: ["low", "medium", "high"],
       },
       composerActions: ["plan"],
       ...overrides,
-    } as Parameters<BbPluginApi["agents"]["experimental_registerProvider"]>[0];
+    } as Parameters<BbPluginApi["providers"]["register"]>[0];
   }
 
   it("rejects malformed declarations with the shared host policy", () => {
     const { bb } = createFakePluginHost();
-    const register = bb.agents.experimental_registerProvider;
+    const register = bb.providers.register;
 
     expect(() => register(agentDeclaration({ id: "Bad_Id!" }))).toThrow(
       /invalid provider id/,
@@ -1116,7 +1115,7 @@ describe("agents.experimental_registerProvider", () => {
 
   it("round-trips a registration through the harness and dispose", () => {
     const { bb, harness } = createFakePluginHost();
-    const handle = bb.agents.experimental_registerProvider(
+    const handle = bb.providers.register(
       agentDeclaration({ displayName: "  My Agent  " }),
     );
 
@@ -1128,7 +1127,12 @@ describe("agents.experimental_registerProvider", () => {
     expect(Object.isFrozen(registered.capabilities)).toBe(true);
     expect(registered.experimental_visibility).toBe("always");
 
-    // Live ids are collision-rejected until disposed.
+    // Live ids are collision-rejected until disposed — through either entry
+    // point, because the legacy `bb.agents.experimental_registerProvider`
+    // alias shares the same registration table.
+    expect(() => bb.providers.register(agentDeclaration())).toThrow(
+      /already registered/,
+    );
     expect(() =>
       bb.agents.experimental_registerProvider(agentDeclaration()),
     ).toThrow(/already registered/);
@@ -1138,7 +1142,7 @@ describe("agents.experimental_registerProvider", () => {
     expect(harness.registrations.providerRegistrations).toEqual([]);
 
     // A disposed id can be re-registered (settings-driven re-declaration).
-    bb.agents.experimental_registerProvider(
+    bb.providers.register(
       agentDeclaration({ displayName: "Second Declaration" }),
     );
     expect(
@@ -1150,7 +1154,7 @@ describe("agents.experimental_registerProvider", () => {
 
   it("normalizes and deeply freezes opaque provider bridge options", () => {
     const { bb, harness } = createFakePluginHost();
-    bb.agents.experimental_registerProvider(
+    bb.providers.register(
       agentDeclaration({
         experimental_visibility: "installed",
         experimental_bridgeOptions: {
@@ -1182,7 +1186,7 @@ describe("agents.experimental_registerProvider", () => {
       "experimental_providerUsage",
     );
 
-    bb.agents.experimental_registerProvider(declaration);
+    bb.providers.register(declaration);
 
     expect(
       harness.registrations.providerRegistrations[0]?.capabilities,
@@ -1195,7 +1199,7 @@ describe("agents.experimental_registerProvider", () => {
 
   it("clears registrations on dispose", async () => {
     const { bb, harness } = createFakePluginHost();
-    bb.agents.experimental_registerProvider(
+    bb.providers.register(
       agentDeclaration({ id: "my-second-agent" }),
     );
     expect(
@@ -1205,7 +1209,7 @@ describe("agents.experimental_registerProvider", () => {
     await harness.dispose();
     expect(harness.registrations.providerRegistrations).toEqual([]);
     expect(() =>
-      bb.agents.experimental_registerProvider(agentDeclaration()),
+      bb.providers.register(agentDeclaration()),
     ).toThrow("used a stale API handle");
   });
 });

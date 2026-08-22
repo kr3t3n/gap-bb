@@ -10,8 +10,12 @@ import type {
   PluginProviderCapabilities,
   PluginProviderComposerAction,
   PluginProviderDeclaration,
+  PluginProviderExtensionKindDeclaration,
+  PluginProviderFallbackModel,
+  PluginProviderOptionDescriptor,
   PluginProviderPermissionMode,
   PluginProviderReasoningLevel,
+  PluginProviderStrings,
   PluginSettingDescriptor,
   PluginSettingDescriptors,
 } from "../backend-contract.js";
@@ -346,6 +350,7 @@ function validateProviderLiteralArray<T extends string>(args: {
 function normalizeProviderBridgeOptions(
   providerId: string,
   value: Readonly<Record<string, JsonValue>>,
+  label = "experimental_bridgeOptions",
 ): Readonly<Record<string, JsonValue>> {
   const active = new Set<object>();
   function visit(current: unknown, path: string): JsonValue {
@@ -359,14 +364,14 @@ function normalizeProviderBridgeOptions(
     if (typeof current === "number") {
       if (!Number.isFinite(current)) {
         throw new Error(
-          `provider "${providerId}" experimental_bridgeOptions${path} must be finite JSON`,
+          `provider "${providerId}" ${label}${path} must be finite JSON`,
         );
       }
       return current;
     }
     if (typeof current !== "object") {
       throw new Error(
-        `provider "${providerId}" experimental_bridgeOptions${path} must be JSON`,
+        `provider "${providerId}" ${label}${path} must be JSON`,
       );
     }
     if (active.has(current)) {
@@ -386,7 +391,7 @@ function normalizeProviderBridgeOptions(
       const prototype = Object.getPrototypeOf(current);
       if (prototype !== Object.prototype && prototype !== null) {
         throw new Error(
-          `provider "${providerId}" experimental_bridgeOptions${path} must contain only plain JSON objects`,
+          `provider "${providerId}" ${label}${path} must contain only plain JSON objects`,
         );
       }
       const normalized: Record<string, JsonValue> = Object.fromEntries(
@@ -409,7 +414,7 @@ function normalizeProviderBridgeOptions(
     typeof normalized !== "object"
   ) {
     throw new Error(
-      `provider "${providerId}" experimental_bridgeOptions must be an object`,
+      `provider "${providerId}" ${label} must be an object`,
     );
   }
   if (
@@ -417,14 +422,384 @@ function normalizeProviderBridgeOptions(
     PLUGIN_PROVIDER_BRIDGE_OPTIONS_MAX_BYTES
   ) {
     throw new Error(
-      `provider "${providerId}" experimental_bridgeOptions exceeds ${PLUGIN_PROVIDER_BRIDGE_OPTIONS_MAX_BYTES} bytes`,
+      `provider "${providerId}" ${label} exceeds ${PLUGIN_PROVIDER_BRIDGE_OPTIONS_MAX_BYTES} bytes`,
     );
   }
   return normalized;
 }
 
+const PROVIDER_STRING_MAX_CHARS = 512;
+const PROVIDER_EXTENSION_KIND_NAME_PATTERN = /^[a-z0-9-]+$/u;
+const PROVIDER_EXTENSION_KINDS_MAX = 32;
+
+function requireNonBlankString(args: {
+  providerId: string;
+  field: string;
+  value: unknown;
+}): string {
+  const { providerId, field, value } = args;
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > PROVIDER_STRING_MAX_CHARS
+  ) {
+    throw new Error(
+      `provider "${providerId}" ${field} must be a non-blank string of at most ${PROVIDER_STRING_MAX_CHARS} characters`,
+    );
+  }
+  return value;
+}
+
+function validateProviderStrings(
+  providerId: string,
+  value: unknown,
+): PluginProviderStrings {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `provider "${providerId}" experimental_strings must be an object`,
+    );
+  }
+  const record: Record<string, unknown> = Object.fromEntries(
+    Object.entries(value),
+  );
+  const required = (field: "signInHint" | "expiredHint" | "installUrl") =>
+    requireNonBlankString({
+      providerId,
+      field: `experimental_strings.${field}`,
+      value: record[field],
+    });
+  const optional = (field: "brandPrefix" | "planModeCopy") =>
+    record[field] === undefined
+      ? undefined
+      : requireNonBlankString({
+          providerId,
+          field: `experimental_strings.${field}`,
+          value: record[field],
+        });
+  let iconTint: PluginProviderStrings["iconTint"];
+  if (record.iconTint !== undefined) {
+    const tint = record.iconTint;
+    if (typeof tint !== "object" || tint === null || Array.isArray(tint)) {
+      throw new Error(
+        `provider "${providerId}" experimental_strings.iconTint must be { light, dark }`,
+      );
+    }
+    const tintRecord: Record<string, unknown> = Object.fromEntries(
+      Object.entries(tint),
+    );
+    iconTint = Object.freeze({
+      light: requireNonBlankString({
+        providerId,
+        field: "experimental_strings.iconTint.light",
+        value: tintRecord.light,
+      }),
+      dark: requireNonBlankString({
+        providerId,
+        field: "experimental_strings.iconTint.dark",
+        value: tintRecord.dark,
+      }),
+    });
+  }
+  const brandPrefix = optional("brandPrefix");
+  const planModeCopy = optional("planModeCopy");
+  return Object.freeze({
+    signInHint: required("signInHint"),
+    expiredHint: required("expiredHint"),
+    installUrl: required("installUrl"),
+    ...(brandPrefix === undefined ? {} : { brandPrefix }),
+    ...(planModeCopy === undefined ? {} : { planModeCopy }),
+    ...(iconTint === undefined ? {} : { iconTint }),
+  });
+}
+
+function validateProviderOptionDescriptors(args: {
+  providerId: string;
+  field: string;
+  value: unknown;
+}): readonly PluginProviderOptionDescriptor[] {
+  const { providerId, field, value } = args;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(
+      `provider "${providerId}" ${field} must be a non-empty array of { id, label, description? }`,
+    );
+  }
+  const seen = new Set<string>();
+  const normalized = value.map(
+    (entry, index): PluginProviderOptionDescriptor => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error(
+          `provider "${providerId}" ${field}[${index}] must be { id, label, description? }`,
+        );
+      }
+      const record: Record<string, unknown> = Object.fromEntries(
+        Object.entries(entry),
+      );
+      const id = requireNonBlankString({
+        providerId,
+        field: `${field}[${index}].id`,
+        value: record.id,
+      });
+      if (seen.has(id)) {
+        throw new Error(
+          `provider "${providerId}" ${field} id ${JSON.stringify(id)} is duplicated`,
+        );
+      }
+      seen.add(id);
+      const label = requireNonBlankString({
+        providerId,
+        field: `${field}[${index}].label`,
+        value: record.label,
+      });
+      const description =
+        record.description === undefined
+          ? undefined
+          : requireNonBlankString({
+              providerId,
+              field: `${field}[${index}].description`,
+              value: record.description,
+            });
+      return Object.freeze({
+        id,
+        label,
+        ...(description === undefined ? {} : { description }),
+      });
+    },
+  );
+  return Object.freeze(normalized);
+}
+
+function validateProviderExtensionKinds(
+  providerId: string,
+  value: unknown,
+): Readonly<Record<string, PluginProviderExtensionKindDeclaration>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `provider "${providerId}" experimental_extensionKinds must be an object keyed by kind name`,
+    );
+  }
+  const entries = Object.entries(value);
+  if (entries.length > PROVIDER_EXTENSION_KINDS_MAX) {
+    throw new Error(
+      `provider "${providerId}" experimental_extensionKinds declares more than ${PROVIDER_EXTENSION_KINDS_MAX} kinds`,
+    );
+  }
+  const normalized: Record<string, PluginProviderExtensionKindDeclaration> = {};
+  for (const [name, declaration] of entries) {
+    if (!PROVIDER_EXTENSION_KIND_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `provider "${providerId}" experimental_extensionKinds name ${JSON.stringify(name)} must match ${PROVIDER_EXTENSION_KIND_NAME_PATTERN}`,
+      );
+    }
+    if (
+      typeof declaration !== "object" ||
+      declaration === null ||
+      Array.isArray(declaration)
+    ) {
+      throw new Error(
+        `provider "${providerId}" experimental_extensionKinds.${name} must be { item?, state? }`,
+      );
+    }
+    const item = Reflect.get(declaration, "item");
+    const state = Reflect.get(declaration, "state");
+    if (item === undefined && state === undefined) {
+      throw new Error(
+        `provider "${providerId}" experimental_extensionKinds.${name} must declare an item schema, a state schema, or both`,
+      );
+    }
+    if (item !== undefined && !isStandardSchema(item)) {
+      throw new Error(
+        `provider "${providerId}" experimental_extensionKinds.${name}.item must be a Standard Schema v1 validator`,
+      );
+    }
+    if (state !== undefined && !isStandardSchema(state)) {
+      throw new Error(
+        `provider "${providerId}" experimental_extensionKinds.${name}.state must be a Standard Schema v1 validator`,
+      );
+    }
+    normalized[name] = Object.freeze({
+      ...(item === undefined ? {} : { item }),
+      ...(state === undefined ? {} : { state }),
+    });
+  }
+  return Object.freeze(normalized);
+}
+
+const PROVIDER_FALLBACK_MODELS_MAX = 64;
+const PROVIDER_ENV_PASSTHROUGH_MAX = 32;
+const PROVIDER_ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/u;
+
+function validateProviderEnvPassthrough(
+  providerId: string,
+  value: unknown,
+): readonly string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `provider "${providerId}" experimental_env must be { passthrough: [...] }`,
+    );
+  }
+  const passthrough = Reflect.get(value, "passthrough");
+  if (!Array.isArray(passthrough)) {
+    throw new Error(
+      `provider "${providerId}" experimental_env.passthrough must be an array of variable names`,
+    );
+  }
+  if (passthrough.length > PROVIDER_ENV_PASSTHROUGH_MAX) {
+    throw new Error(
+      `provider "${providerId}" experimental_env.passthrough names more than ${PROVIDER_ENV_PASSTHROUGH_MAX} variables`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const name of passthrough) {
+    if (typeof name !== "string" || !PROVIDER_ENV_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `provider "${providerId}" experimental_env.passthrough entries must match ${PROVIDER_ENV_NAME_PATTERN}`,
+      );
+    }
+    if (seen.has(name)) {
+      throw new Error(
+        `provider "${providerId}" experimental_env.passthrough repeats ${JSON.stringify(name)}`,
+      );
+    }
+    seen.add(name);
+  }
+  return Object.freeze([...seen]);
+}
+
+function validateProviderFallbackModels(
+  providerId: string,
+  value: unknown,
+): readonly PluginProviderFallbackModel[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `provider "${providerId}" experimental_models must be { fallback: [...] }`,
+    );
+  }
+  const fallback = Reflect.get(value, "fallback");
+  if (!Array.isArray(fallback)) {
+    throw new Error(
+      `provider "${providerId}" experimental_models.fallback must be an array`,
+    );
+  }
+  if (fallback.length > PROVIDER_FALLBACK_MODELS_MAX) {
+    throw new Error(
+      `provider "${providerId}" experimental_models.fallback lists more than ${PROVIDER_FALLBACK_MODELS_MAX} models`,
+    );
+  }
+  const seen = new Set<string>();
+  let defaults = 0;
+  const normalized = fallback.map((entry, index): PluginProviderFallbackModel => {
+    const field = `experimental_models.fallback[${index}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`provider "${providerId}" ${field} must be an object`);
+    }
+    const record: Record<string, unknown> = Object.fromEntries(
+      Object.entries(entry),
+    );
+    const id = requireNonBlankString({
+      providerId,
+      field: `${field}.id`,
+      value: record.id,
+    });
+    if (seen.has(id)) {
+      throw new Error(
+        `provider "${providerId}" experimental_models.fallback id ${JSON.stringify(id)} is duplicated`,
+      );
+    }
+    seen.add(id);
+    const displayName = requireNonBlankString({
+      providerId,
+      field: `${field}.displayName`,
+      value: record.displayName,
+    });
+    const description = requireNonBlankString({
+      providerId,
+      field: `${field}.description`,
+      value: record.description,
+    });
+    const efforts = record.supportedReasoningEfforts;
+    if (!Array.isArray(efforts) || efforts.length === 0) {
+      throw new Error(
+        `provider "${providerId}" ${field}.supportedReasoningEfforts must be a non-empty array`,
+      );
+    }
+    const levels = new Set<PluginProviderReasoningLevel>();
+    const supportedReasoningEfforts = efforts.map(
+      (
+        effort,
+        effortIndex,
+      ): PluginProviderFallbackModel["supportedReasoningEfforts"][number] => {
+        if (
+          typeof effort !== "object" ||
+          effort === null ||
+          Array.isArray(effort)
+        ) {
+          throw new Error(
+            `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}] must be { reasoningEffort, description }`,
+          );
+        }
+        const reasoningEffort = Reflect.get(effort, "reasoningEffort");
+        if (
+          typeof reasoningEffort !== "string" ||
+          !(PLUGIN_PROVIDER_REASONING_LEVEL_VALUES as readonly string[]).includes(
+            reasoningEffort,
+          )
+        ) {
+          throw new Error(
+            `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}].reasoningEffort must be one of ${PLUGIN_PROVIDER_REASONING_LEVEL_VALUES.join(", ")}`,
+          );
+        }
+        const level = reasoningEffort as PluginProviderReasoningLevel;
+        if (levels.has(level)) {
+          throw new Error(
+            `provider "${providerId}" ${field}.supportedReasoningEfforts repeats ${JSON.stringify(level)}`,
+          );
+        }
+        levels.add(level);
+        return Object.freeze({
+          reasoningEffort: level,
+          description: requireNonBlankString({
+            providerId,
+            field: `${field}.supportedReasoningEfforts[${effortIndex}].description`,
+            value: Reflect.get(effort, "description"),
+          }),
+        });
+      },
+    );
+    const defaultReasoningEffort = record.defaultReasoningEffort;
+    if (
+      typeof defaultReasoningEffort !== "string" ||
+      !levels.has(defaultReasoningEffort as PluginProviderReasoningLevel)
+    ) {
+      throw new Error(
+        `provider "${providerId}" ${field}.defaultReasoningEffort must be one of its supportedReasoningEfforts`,
+      );
+    }
+    if (typeof record.isDefault !== "boolean") {
+      throw new Error(
+        `provider "${providerId}" ${field}.isDefault must be a boolean`,
+      );
+    }
+    if (record.isDefault) defaults += 1;
+    return Object.freeze({
+      id,
+      displayName,
+      description,
+      supportedReasoningEfforts: Object.freeze(supportedReasoningEfforts),
+      defaultReasoningEffort:
+        defaultReasoningEffort as PluginProviderReasoningLevel,
+      isDefault: record.isDefault,
+    });
+  });
+  if (normalized.length > 0 && defaults !== 1) {
+    throw new Error(
+      `provider "${providerId}" experimental_models.fallback must mark exactly one model isDefault (found ${defaults})`,
+    );
+  }
+  return Object.freeze(normalized);
+}
+
 /**
- * Validate one `bb.agents.experimental_registerProvider` declaration. Plugin
+ * Validate one `bb.providers.register` declaration. Plugin
  * sources are untyped at runtime, so every field is checked; the production
  * host and the fake host both call this, so they accept and reject provider
  * declarations identically. Throws a descriptive error on the first problem;
@@ -440,6 +815,15 @@ export function validatePluginProviderDeclaration(
   if (typeof id !== "string" || !PROVIDER_ID_PATTERN.test(id)) {
     throw new Error(
       `invalid provider id ${JSON.stringify(id)} — use 2-64 lowercase letters, digits, and "-", starting with a letter or digit`,
+    );
+  }
+  const family = declaration.experimental_family;
+  if (
+    family !== undefined &&
+    (typeof family !== "string" || !PROVIDER_ID_PATTERN.test(family))
+  ) {
+    throw new Error(
+      `provider "${id}" experimental_family must use the provider id grammar (2-64 lowercase letters, digits, and "-")`,
     );
   }
   const displayName =
@@ -512,7 +896,6 @@ export function validatePluginProviderDeclaration(
     "supportsManualCompaction",
     "supportsThreadArchive",
     "supportsThreadRename",
-    "supportsWorkflows",
   ] as const;
   for (const field of booleanCapabilityFields) {
     if (typeof capabilities[field] !== "boolean") {
@@ -538,7 +921,6 @@ export function validatePluginProviderDeclaration(
     supportsManualCompaction: capabilities.supportsManualCompaction,
     supportsThreadArchive: capabilities.supportsThreadArchive,
     supportsThreadRename: capabilities.supportsThreadRename,
-    supportsWorkflows: capabilities.supportsWorkflows,
     permissionModes: validateProviderLiteralArray({
       providerId: id,
       field: "capabilities.permissionModes",
@@ -582,9 +964,56 @@ export function validatePluginProviderDeclaration(
       `provider "${id}" experimental_visibility "installed" requires experimental_providerHealth`,
     );
   }
+  // Target-state declaration fields: validated and carried when present so
+  // WS2a can project them, never silently dropped.
+  const strings =
+    declaration.experimental_strings === undefined
+      ? undefined
+      : validateProviderStrings(id, declaration.experimental_strings);
+  const serviceTiers =
+    declaration.experimental_serviceTiers === undefined
+      ? undefined
+      : validateProviderOptionDescriptors({
+          providerId: id,
+          field: "experimental_serviceTiers",
+          value: declaration.experimental_serviceTiers,
+        });
+  const reasoningLevels =
+    declaration.experimental_reasoningLevels === undefined
+      ? undefined
+      : validateProviderOptionDescriptors({
+          providerId: id,
+          field: "experimental_reasoningLevels",
+          value: declaration.experimental_reasoningLevels,
+        });
+  const extensionKinds =
+    declaration.experimental_extensionKinds === undefined
+      ? undefined
+      : validateProviderExtensionKinds(
+          id,
+          declaration.experimental_extensionKinds,
+        );
+  const fallbackModels =
+    declaration.experimental_models === undefined
+      ? undefined
+      : validateProviderFallbackModels(id, declaration.experimental_models);
+  const envPassthrough =
+    declaration.experimental_env === undefined
+      ? undefined
+      : validateProviderEnvPassthrough(id, declaration.experimental_env);
+  const deriveProviderOptions = declaration.experimental_deriveProviderOptions;
+  if (
+    deriveProviderOptions !== undefined &&
+    typeof deriveProviderOptions !== "function"
+  ) {
+    throw new Error(
+      `provider "${id}" experimental_deriveProviderOptions must be a function (context) => providerOptions`,
+    );
+  }
   return Object.freeze({
     id,
     displayName,
+    ...(family === undefined ? {} : { experimental_family: family }),
     ...(icon === undefined ? {} : { icon }),
     ...(bridgeOptions === undefined
       ? {}
@@ -592,7 +1021,49 @@ export function validatePluginProviderDeclaration(
     experimental_visibility: visibility,
     capabilities: normalizedCapabilities,
     composerActions,
+    ...(strings === undefined ? {} : { experimental_strings: strings }),
+    ...(serviceTiers === undefined
+      ? {}
+      : { experimental_serviceTiers: serviceTiers }),
+    ...(reasoningLevels === undefined
+      ? {}
+      : { experimental_reasoningLevels: reasoningLevels }),
+    ...(extensionKinds === undefined
+      ? {}
+      : { experimental_extensionKinds: extensionKinds }),
+    ...(fallbackModels === undefined
+      ? {}
+      : { experimental_models: Object.freeze({ fallback: fallbackModels }) }),
+    ...(envPassthrough === undefined
+      ? {}
+      : { experimental_env: Object.freeze({ passthrough: envPassthrough }) }),
+    ...(deriveProviderOptions === undefined
+      ? {}
+      : { experimental_deriveProviderOptions: deriveProviderOptions }),
   });
+}
+
+/**
+ * Run a declaration's `experimental_deriveProviderOptions` hook for one
+ * command and validate its result as a bounded, plain-JSON object — the same
+ * rules as `experimental_bridgeOptions`, because the result rides the same
+ * wire slot. Shared by the real host and the fake so a hook that works in
+ * tests works in production.
+ */
+export function deriveValidatedProviderOptions(args: {
+  declaration: PluginProviderDeclaration;
+  context: Parameters<
+    NonNullable<PluginProviderDeclaration["experimental_deriveProviderOptions"]>
+  >[0];
+}): Readonly<Record<string, JsonValue>> {
+  const hook = args.declaration.experimental_deriveProviderOptions;
+  if (hook === undefined) return Object.freeze({});
+  const result = hook(args.context);
+  return normalizeProviderBridgeOptions(
+    args.declaration.id,
+    result,
+    "experimental_deriveProviderOptions result",
+  );
 }
 
 export function isStandardSchema(value: unknown): value is StandardSchemaV1 {

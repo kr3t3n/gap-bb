@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createBridgeProtocolAdapter } from "./bridge-protocol-adapter.js";
 import type { ProviderExecutionContext } from "./provider-adapter.js";
 
-function makeAdapter() {
+function makeAdapter(staticProviderOptions?: Record<string, unknown>) {
   return createBridgeProtocolAdapter({
     id: "fake-bridge",
     capabilities: {
@@ -15,6 +15,7 @@ function makeAdapter() {
       permissionModes: ["full"],
     },
     process: { command: "node", args: ["fake-bridge.mjs"] },
+    ...(staticProviderOptions === undefined ? {} : { staticProviderOptions }),
   });
 }
 
@@ -22,9 +23,12 @@ function completeHandshake(
   adapter: ReturnType<typeof makeAdapter>,
   capabilities: Record<string, unknown>,
 ): void {
-  const requests = adapter.buildPostInitializeRequests?.() ?? [];
+  const requests = adapter.buildPostInitializeRequests();
   expect(requests).toHaveLength(1);
-  requests[0]?.onResult({ protocolVersion: 2, capabilities });
+  requests[0]?.onResult({
+    protocolVersion: 2,
+    capabilities: { grammarVersions: [3, 3], ...capabilities },
+  });
 }
 
 const fullModeOptions: ProviderExecutionContext = {
@@ -32,7 +36,7 @@ const fullModeOptions: ProviderExecutionContext = {
   permissionScope: "full",
   approvalReviewer: null,
   permissionEscalation: null,
-  workflowsEnabled: false,
+  providerOptions: {},
 };
 
 describe("handshake version gate", () => {
@@ -42,7 +46,7 @@ describe("handshake version gate", () => {
   // legible startup error naming both versions and the plugin to update.
   it("rejects a bridge on another protocol version with a legible error", () => {
     const adapter = makeAdapter();
-    const requests = adapter.buildPostInitializeRequests?.() ?? [];
+    const requests = adapter.buildPostInitializeRequests();
     expect(requests).toHaveLength(1);
     expect(requests[0]?.required).toBe(true);
     expect(() =>
@@ -54,7 +58,7 @@ describe("handshake version gate", () => {
 
   it("rejects a malformed initialize result instead of defaulting capabilities", () => {
     const adapter = makeAdapter();
-    const requests = adapter.buildPostInitializeRequests?.() ?? [];
+    const requests = adapter.buildPostInitializeRequests();
     expect(requests).toHaveLength(1);
     // A bridge that answers initialize with garbage must be a legible startup
     // failure, not a session silently running on default capabilities.
@@ -62,6 +66,50 @@ describe("handshake version gate", () => {
       /malformed result.*fake-bridge/s,
     );
     expect(() => requests[0]?.onResult(null)).toThrowError(/malformed result/);
+  });
+
+  it("states the assembler's grammar range and rejects a bridge with no common version", () => {
+    const adapter = makeAdapter();
+    const requests = adapter.buildPostInitializeRequests();
+    expect(requests[0]?.plan).toMatchObject({
+      method: "initialize",
+      params: { grammarVersions: [3, 3] },
+    });
+    // A bridge whose range misses the assembler's would connect and then
+    // have every thread/delta refused — the same silent-timeline failure as
+    // a wrong protocol version, so it fails startup the same legible way:
+    // a future grammar, the deleted v2 grammar, and an older bridge that
+    // omits the field (which reads as v2) alike.
+    expect(() =>
+      requests[0]?.onResult({
+        protocolVersion: 2,
+        capabilities: { grammarVersions: [4, 5] },
+      }),
+    ).toThrowError(
+      /grammar versions 4-5.*assembles versions 3-3.*fake-bridge/s,
+    );
+    expect(() =>
+      requests[0]?.onResult({
+        protocolVersion: 2,
+        capabilities: { grammarVersions: [2, 2] },
+      }),
+    ).toThrowError(/grammar versions 2-2.*assembles versions 3-3/s);
+    expect(() =>
+      requests[0]?.onResult({ protocolVersion: 2, capabilities: {} }),
+    ).toThrowError(/grammar versions 2-2.*assembles versions 3-3/s);
+    // Any range containing 3 negotiates.
+    expect(() =>
+      requests[0]?.onResult({
+        protocolVersion: 2,
+        capabilities: { grammarVersions: [3, 3] },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      requests[0]?.onResult({
+        protocolVersion: 2,
+        capabilities: { grammarVersions: [2, 4] },
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -227,8 +275,8 @@ describe("thread/stop intent", () => {
 });
 
 describe("options mapping", () => {
-  it("keeps core fields top-level and packs provider-flavored fields opaquely", () => {
-    const adapter = makeAdapter();
+  it("keeps core fields top-level and merges the plugin-derived bag over the static options", () => {
+    const adapter = makeAdapter({ acpLaunchSpec: { command: "echo" } });
     const plan = adapter.buildCommandPlan({
       type: "turn/start",
       threadId: "thr_1",
@@ -238,8 +286,8 @@ describe("options mapping", () => {
       options: {
         ...fullModeOptions,
         model: "gpt-5.6-sol",
-        workflowsEnabled: true,
-        memoryEnabled: false,
+        promptMode: "plan",
+        providerOptions: { memoryEnabled: false },
       },
     });
     expect(plan).toMatchObject({
@@ -248,8 +296,9 @@ describe("options mapping", () => {
         options: {
           model: "gpt-5.6-sol",
           permissionMode: "full",
+          promptMode: "plan",
           providerOptions: {
-            workflowsEnabled: true,
+            acpLaunchSpec: { command: "echo" },
             memoryEnabled: false,
           },
         },
@@ -257,7 +306,7 @@ describe("options mapping", () => {
     });
     const options = (plan as { params: { options: Record<string, unknown> } })
       .params.options;
-    expect(options).not.toHaveProperty("workflowsEnabled");
+    expect(options).not.toHaveProperty("memoryEnabled");
     expect(options).not.toHaveProperty("skillRoots");
   });
 });
@@ -333,14 +382,12 @@ describe("translateEvent", () => {
     ).toStrictEqual([]);
   });
 
-  // The reaper's only view of provider work bb cannot see in the timeline.
-  // Codex models native subagents as tool calls, so a thread with a live child
-  // agent looks idle without this; a bridge that never reports reads as idle.
-  it("tracks thread/openWork per thread without emitting a timeline event", () => {
+  // A bridge notification the runtime does not know is ignored, never a
+  // timeline event: the protocol's tolerance rule, and what a pre-migration
+  // codex bridge's `thread/openWork` report now reads as (open delegations
+  // carry that fact through the timeline instead).
+  it("ignores an unknown bridge notification without emitting a timeline event", () => {
     const adapter = makeAdapter();
-    const work = { providerThreadId: "codex-1", threadId: "thr_1" };
-    expect(adapter.hasOpenThreadWork?.(work)).toBe(false);
-
     expect(
       adapter.translateEvent({
         jsonrpc: "2.0",
@@ -348,20 +395,6 @@ describe("translateEvent", () => {
         params: { threadId: "thr_1", open: true },
       }),
     ).toStrictEqual([]);
-    expect(adapter.hasOpenThreadWork?.(work)).toBe(true);
-    expect(
-      adapter.hasOpenThreadWork?.({
-        providerThreadId: "codex-2",
-        threadId: "thr_2",
-      }),
-    ).toBe(false);
-
-    adapter.translateEvent({
-      jsonrpc: "2.0",
-      method: "thread/openWork",
-      params: { threadId: "thr_1", open: false },
-    });
-    expect(adapter.hasOpenThreadWork?.(work)).toBe(false);
   });
 
   it("only surfaces session/replaced when provider context was lost", () => {
@@ -399,6 +432,55 @@ describe("translateEvent", () => {
     expect((events[0] as { summary?: string }).summary).toContain(
       "context was lost",
     );
+  });
+});
+
+describe("provider/recovery", () => {
+  it("decodes a typed recovery hint as a runtime signal, never a timeline event", () => {
+    const adapter = makeAdapter();
+    const event = {
+      jsonrpc: "2.0" as const,
+      method: "provider/recovery",
+      params: {
+        threadId: "thr_1",
+        kind: "sessionArchived",
+        message: "session rollout-1 is archived",
+        retryable: true,
+      },
+    };
+    expect(adapter.decodeRecoveryHint(event)).toEqual({
+      threadId: "thr_1",
+      kind: "sessionArchived",
+      message: "session rollout-1 is archived",
+      retryable: true,
+    });
+    expect(adapter.translateEvent(event)).toStrictEqual([]);
+    // Provider-wide hints carry no thread.
+    expect(
+      adapter.decodeRecoveryHint({
+        jsonrpc: "2.0",
+        method: "provider/recovery",
+        params: { kind: "authRequired", message: "sign in", retryable: false },
+      }),
+    ).toEqual({ kind: "authRequired", message: "sign in", retryable: false });
+  });
+
+  it("drops a malformed or unknown-kind hint and ignores other notifications", () => {
+    const adapter = makeAdapter();
+    expect(
+      adapter.decodeRecoveryHint({
+        jsonrpc: "2.0",
+        method: "provider/recovery",
+        params: { kind: "rebootTheUniverse", message: "x", retryable: true },
+      }),
+    ).toBeNull();
+    expect(
+      adapter.decodeRecoveryHint({
+        jsonrpc: "2.0",
+        method: "thread/openWork",
+        params: { threadId: "thr_1", open: true },
+      }),
+    ).toBeNull();
   });
 });
 

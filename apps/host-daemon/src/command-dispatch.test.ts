@@ -207,7 +207,7 @@ function createRuntime(): FakeDispatchRuntime {
         : null,
     reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
     hasThread: (threadId) => hostedThreadIds.has(threadId),
-    getLiveThreadIds: () => [...activeTurnsByThreadId.keys()],
+    getLiveThreadIds: vi.fn(() => [...activeTurnsByThreadId.keys()]),
     hasOpenBackgroundWork: () => false,
     shutdown: vi.fn(async () => undefined),
     setActiveTurn: (threadId, turnId) => {
@@ -218,6 +218,44 @@ function createRuntime(): FakeDispatchRuntime {
       hostedThreadIds.add(threadId);
       activeTurnsByThreadId.delete(threadId);
     },
+  };
+}
+
+function createTurnSubmitCommand(
+  target: CommandOf<"turn.submit">["target"],
+): CommandOf<"turn.submit"> {
+  return {
+    bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+    type: "turn.submit",
+    environmentId: "env-1",
+    threadId: "thread-1",
+    requestId: "creq_turn_submit",
+    input: [{ type: "text", text: "follow up", mentions: [] }],
+    options: {
+      model: "gpt-5",
+      serviceTier: "default",
+      reasoningLevel: "medium",
+      providerOptions: {},
+      permissionMode: "full",
+      permissionScope: "full",
+      approvalReviewer: null,
+      permissionEscalation: null,
+    },
+    resumeContext: {
+      bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+      workspaceContext: {
+        workspacePath: WORKSPACE_PATH,
+        workspaceProvisionType: "unmanaged",
+      },
+      projectId: "proj_1",
+      providerId: "codex",
+      providerThreadId: "provider-thread-1",
+      instructions: "Be concise.",
+      dynamicTools: [],
+      injectedSkillSources: [],
+      instructionMode: "append",
+    },
+    target,
   };
 }
 
@@ -350,6 +388,155 @@ async function runSuccessfulClaudeCodeUpdateVerification(args: {
 }
 
 describe("dispatchCommand", () => {
+  it("steers an auto submit when the active turn appears after the server snapshot", async () => {
+    const runtime = createRuntime();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: WORKSPACE_PATH,
+    });
+    runtime.setIdle("thread-1");
+    vi.mocked(runtime.getLiveThreadIds).mockReturnValueOnce(["thread-1"]);
+    vi.mocked(runtime.waitForActiveTurn).mockImplementationOnce(
+      async (threadId) => {
+        runtime.setActiveTurn(threadId, "turn-starting");
+        return "turn-starting";
+      },
+    );
+
+    const result = await dispatchCommand(
+      createTurnSubmitCommand({ mode: "auto", expectedTurnId: null }),
+      {
+        dataDir: "/tmp/bb-data",
+        logger: silentLogger,
+        eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+        fetchProjectAttachment: async () => {
+          throw new Error("Unexpected project attachment fetch");
+        },
+        runtimeManager: manager,
+        threadStorageRootPath: "/tmp/bb-thread-storage",
+      },
+    );
+
+    expect(result).toEqual({ appliedAs: "steer" });
+    expect(runtime.waitForActiveTurn).toHaveBeenCalledWith("thread-1", {
+      timeoutMs: 5_000,
+    });
+    expect(runtime.steerTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientRequestId: "creq_turn_submit",
+        expectedTurnId: "turn-starting",
+        threadId: "thread-1",
+      }),
+    );
+    expect(runtime.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("rebases auto input onto the daemon's newer active turn", async () => {
+    const runtime = createRuntime();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: WORKSPACE_PATH,
+    });
+    runtime.setActiveTurn("thread-1", "turn-new");
+
+    const result = await dispatchCommand(
+      createTurnSubmitCommand({
+        mode: "auto",
+        expectedTurnId: "turn-old",
+      }),
+      {
+        dataDir: "/tmp/bb-data",
+        logger: silentLogger,
+        eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+        fetchProjectAttachment: async () => {
+          throw new Error("Unexpected project attachment fetch");
+        },
+        runtimeManager: manager,
+        threadStorageRootPath: "/tmp/bb-thread-storage",
+      },
+    );
+
+    expect(result).toEqual({ appliedAs: "steer" });
+    expect(runtime.steerTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedTurnId: "turn-new" }),
+    );
+    expect(runtime.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("starts auto input immediately when the prior turn already completed", async () => {
+    const runtime = createRuntime();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: WORKSPACE_PATH,
+    });
+    runtime.setIdle("thread-1");
+
+    const result = await dispatchCommand(
+      createTurnSubmitCommand({ mode: "auto", expectedTurnId: null }),
+      {
+        dataDir: "/tmp/bb-data",
+        logger: silentLogger,
+        eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+        fetchProjectAttachment: async () => {
+          throw new Error("Unexpected project attachment fetch");
+        },
+        runtimeManager: manager,
+        threadStorageRootPath: "/tmp/bb-thread-storage",
+      },
+    );
+
+    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(runtime.waitForActiveTurn).not.toHaveBeenCalled();
+    expect(runtime.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects auto input when a pending turn still has no id after the wait", async () => {
+    const runtime = createRuntime();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: WORKSPACE_PATH,
+    });
+    runtime.setIdle("thread-1");
+    vi.mocked(runtime.getLiveThreadIds).mockReturnValue(["thread-1"]);
+    vi.mocked(runtime.waitForActiveTurn).mockResolvedValueOnce(null);
+
+    await expect(
+      dispatchCommand(
+        createTurnSubmitCommand({ mode: "auto", expectedTurnId: null }),
+        {
+          dataDir: "/tmp/bb-data",
+          logger: silentLogger,
+          eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+          fetchProjectAttachment: async () => {
+            throw new Error("Unexpected project attachment fetch");
+          },
+          runtimeManager: manager,
+          threadStorageRootPath: "/tmp/bb-thread-storage",
+        },
+      ),
+    ).rejects.toThrow(
+      "Refusing to start a competing turn while thread-1 is still starting",
+    );
+    expect(runtime.runTurn).not.toHaveBeenCalled();
+    expect(runtime.steerTurn).not.toHaveBeenCalled();
+  });
+
   it("flushes buffered events before reporting thread.stop success", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({
@@ -531,7 +718,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -607,7 +794,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -978,7 +1165,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -1076,7 +1263,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -1153,7 +1340,7 @@ describe("dispatchCommand", () => {
         model: "claude-sonnet-4-6",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -1218,7 +1405,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -1711,7 +1898,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -1768,7 +1955,7 @@ describe("dispatchCommand", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,

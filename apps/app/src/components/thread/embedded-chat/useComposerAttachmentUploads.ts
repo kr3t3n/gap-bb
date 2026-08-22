@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
+import { getMutationErrorMessage } from "@/lib/mutation-errors";
+import { BbHttpError } from "@/lib/sdk";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { InlineQueuedMessageEditState } from "./useInlineQueuedMessageEditing";
 
@@ -49,6 +51,26 @@ interface DraftAttachmentOperationState {
   targetKey: string | null;
 }
 
+/**
+ * The server states why it refused an upload (unsupported format, size
+ * limit); transport failures carry nothing a user can act on.
+ */
+function uploadRejectionReason(error: unknown): string | null {
+  return error instanceof BbHttpError
+    ? getMutationErrorMessage({ error, fallbackMessage: "Request failed" })
+    : null;
+}
+
+function attachFailureMessage(
+  failedFiles: readonly string[],
+  reason: string | null,
+): string {
+  const names = failedFiles.join(", ");
+  return reason === null
+    ? `Failed to attach: ${names}`
+    : `Failed to attach ${names}: ${reason}`;
+}
+
 /** Upload state for one independently mounted composer draft. */
 export function useDraftAttachmentUploads({
   projectId,
@@ -90,6 +112,7 @@ export function useDraftAttachmentUploads({
         targetKey: capturedTargetKey,
       }));
       const failedFiles: string[] = [];
+      let rejectionReason: string | null = null;
       try {
         for (const file of files) {
           try {
@@ -101,8 +124,9 @@ export function useDraftAttachmentUploads({
             if (currentTarget?.key === capturedTargetKey) {
               currentTarget.addAttachment(uploaded);
             }
-          } catch {
+          } catch (error) {
             failedFiles.push(file.name);
+            rejectionReason ??= uploadRejectionReason(error);
           }
         }
       } finally {
@@ -112,7 +136,7 @@ export function useDraftAttachmentUploads({
                 error:
                   failedFiles.length > 0 &&
                   targetRef.current?.key === capturedTargetKey
-                    ? `Failed to attach: ${failedFiles.join(", ")}`
+                    ? attachFailureMessage(failedFiles, rejectionReason)
                     : current.error,
                 pendingCount: Math.max(0, current.pendingCount - 1),
                 targetKey: capturedTargetKey,

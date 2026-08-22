@@ -952,6 +952,8 @@ describe("bb tasks CLI", () => {
           "gpt-5.6-sol",
           "--reasoning",
           "high",
+          "--service-tier",
+          "fast",
           "--permission",
           "accept-edits",
           "--environment",
@@ -969,6 +971,9 @@ describe("bb tasks CLI", () => {
     expect(created).toMatchObject({
       name: "CLI worker",
       providerId: "codex",
+      modelId: "gpt-5.6-sol",
+      reasoningLevel: "high",
+      serviceTier: "fast",
       permissionMode: "accept-edits",
       environmentKind: "new-worktree",
       baseBranch: "main",
@@ -981,6 +986,7 @@ describe("bb tasks CLI", () => {
     expect(shown).toContain("Environment   worktree");
     expect(shown).toContain("Base branch   main");
     expect(shown).toContain("Machine       host_air");
+    expect(shown).toContain("Service tier  fast");
 
     const updated = JSON.parse(
       stdout(
@@ -990,6 +996,8 @@ describe("bb tasks CLI", () => {
           "CLI worker",
           "--reasoning",
           "ultra",
+          "--service-tier",
+          "none",
           "--name",
           "CLI reviewer",
           "--environment",
@@ -1002,6 +1010,7 @@ describe("bb tasks CLI", () => {
       id: created.id,
       name: "CLI reviewer",
       reasoningLevel: "ultra",
+      serviceTier: null,
       environmentKind: "project-default",
       baseBranch: null,
       machineId: null,
@@ -1011,6 +1020,7 @@ describe("bb tasks CLI", () => {
     expect(listTable).toContain("ENVIRONMENT");
     expect(listTable).toContain("BASE BRANCH");
     expect(listTable).toContain("MACHINE");
+    expect(listTable).toContain("SERVICE TIER");
 
     const listed = JSON.parse(
       stdout(await harness.runCli(["preset", "list", "--json"])),
@@ -1176,6 +1186,96 @@ describe("bb tasks CLI", () => {
         }),
       ],
     ]);
+
+    await harness.dispose();
+  });
+
+  it("detaches a thread with `bb tasks detach` and lists live threads first", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "tasks",
+      sdk: {
+        threads: {
+          get: async ({ threadId }: { threadId: string }) => ({
+            id: threadId,
+            title: `Worker ${threadId}`,
+            titleFallback: null,
+            status: threadId === "thr_dead_worker" ? "error" : "idle",
+          }),
+          send: async () => undefined,
+        },
+      },
+    });
+    await plugin(bb);
+    stdout(
+      await harness.runCli([
+        "project",
+        "create",
+        "--name",
+        "Detach",
+        "--prefix",
+        "DET",
+      ]),
+    );
+    stdout(
+      await harness.runCli(["create", "--project", "DET", "--title", "Work"]),
+    );
+
+    expect(stdout(await harness.runCli(["--help"]))).toContain(
+      "detach                         Detach an agent thread from a task",
+    );
+
+    // An orchestrator attaches a worker, it dies, and a replacement is
+    // attached: the list must lead with the live replacement.
+    stdout(
+      await harness.runCli(["attach", "DET-1", "--thread", "thr_dead_worker"]),
+    );
+    stdout(
+      await harness.runCli(["attach", "DET-1", "--thread", "thr_live_worker"]),
+    );
+    const listed = JSON.parse(
+      stdout(await harness.runCli(["threads", "DET-1", "--json"])),
+    );
+    expect(
+      listed.taskThreads.map((thread: { threadId: string }) => thread.threadId),
+    ).toEqual(["thr_live_worker", "thr_dead_worker"]);
+
+    expect(
+      stdout(
+        await harness.runCli([
+          "detach",
+          "DET-1",
+          "--thread",
+          "thr_dead_worker",
+        ]),
+      ),
+    ).toBe("Detached thr_dead_worker from DET-1");
+    await expect(
+      harness.runCli(["detach", "DET-1", "--thread", "thr_dead_worker"]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: "Thread thr_dead_worker is not attached to DET-1",
+    });
+
+    // Without --thread the command targets the invoking thread, like attach.
+    const previousThreadId = process.env.BB_THREAD_ID;
+    process.env.BB_THREAD_ID = "thr_live_worker";
+    try {
+      expect(
+        JSON.parse(stdout(await harness.runCli(["detach", "DET-1", "--json"]))),
+      ).toMatchObject({ task: { key: "DET-1" }, threadId: "thr_live_worker" });
+      delete process.env.BB_THREAD_ID;
+      await expect(harness.runCli(["detach", "DET-1"])).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: "missing --thread and BB_THREAD_ID is not set",
+      });
+    } finally {
+      if (previousThreadId === undefined) delete process.env.BB_THREAD_ID;
+      else process.env.BB_THREAD_ID = previousThreadId;
+    }
+    expect(
+      JSON.parse(stdout(await harness.runCli(["threads", "DET-1", "--json"])))
+        .taskThreads,
+    ).toEqual([]);
 
     await harness.dispose();
   });

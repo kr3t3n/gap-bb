@@ -1,20 +1,21 @@
 /**
  * Provider registry.
  *
- * Manages the set of available built-in provider metadata and the canonical
- * bridge routing every provider now uses. No legacy adapter factories remain.
+ * Builds the bridge-protocol adapter for a provider from its bridge launch.
+ * Every provider runs on the one adapter; the only branch is which binary to
+ * spawn.
  */
 
 import { DAEMON_BUNDLED_PROVIDER_BRIDGE_IDS } from "@bb/host-daemon-contract";
-import { createBridgeProtocolAdapter } from "./bridge-protocol-adapter.js";
+import {
+  createBridgeProtocolAdapter,
+  type BridgeProtocolAdapter,
+} from "./bridge-protocol-adapter.js";
 import {
   resolveBridgeWorkerProcessArgs,
   resolveBundledBridgeModulePath,
 } from "./shared/bridge-path.js";
-import type {
-  ProviderAdapter,
-  ProviderAdapterFactoryOptions,
-} from "./provider-adapter.js";
+import type { CreateBridgeAdapterOptions } from "./provider-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Lookup
@@ -48,7 +49,7 @@ for (const bundledBridgeId of DAEMON_BUNDLED_PROVIDER_BRIDGE_IDS) {
 
 function resolveBundledBridgeModule(
   bundledBridgeId: string,
-  options: ProviderAdapterFactoryOptions,
+  options: CreateBridgeAdapterOptions,
 ): string {
   const entry = DAEMON_BUNDLED_BRIDGE_ENTRIES[bundledBridgeId];
   if (entry === undefined) {
@@ -72,7 +73,7 @@ function resolveBundledBridgeModule(
  * roots are a host-local fact the server cannot supply at all.
  */
 function buildPluginStaticProviderOptions(
-  options: ProviderAdapterFactoryOptions,
+  options: CreateBridgeAdapterOptions,
 ): { staticProviderOptions?: Record<string, unknown> } {
   const additionalWorkspaceWriteRoots = options.additionalWorkspaceWriteRoots;
   const acpLaunchSpec = options.acpLaunchSpec;
@@ -100,9 +101,9 @@ function buildPluginStaticProviderOptions(
  */
 export function createProviderForId(
   providerId: string,
-  options?: ProviderAdapterFactoryOptions,
-): ProviderAdapter {
-  const adapterOptions: ProviderAdapterFactoryOptions = options ?? {
+  options?: CreateBridgeAdapterOptions,
+): BridgeProtocolAdapter {
+  const adapterOptions: CreateBridgeAdapterOptions = options ?? {
     additionalWorkspaceWriteRoots: [],
   };
   const bridgeLaunch = adapterOptions.bridgeLaunch;
@@ -143,10 +144,26 @@ export function createProviderForId(
         bridgeLaunch.pluginId,
         bridgeLaunch.dataDir,
       ],
-      ...(adapterOptions.bridgeNodeEnv !== undefined
-        ? { env: adapterOptions.bridgeNodeEnv }
-        : {}),
+      env: {
+        // The declared passthrough: the runtime strips every inherited
+        // `BB_*` variable from provider processes, so a bridge that honors an
+        // operator override names it and gets exactly that forwarded.
+        ...pickDeclaredEnv(process.env, bridgeLaunch.envPassthrough),
+        ...adapterOptions.bridgeNodeEnv,
+      },
     },
     ...buildPluginStaticProviderOptions(adapterOptions),
   });
+}
+
+function pickDeclaredEnv(
+  env: NodeJS.ProcessEnv,
+  names: readonly string[],
+): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const name of names) {
+    const value = env[name];
+    if (value !== undefined && value !== "") picked[name] = value;
+  }
+  return picked;
 }

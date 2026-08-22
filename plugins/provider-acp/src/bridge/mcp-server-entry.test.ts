@@ -74,14 +74,15 @@ async function waitFor<T>(
 
 function agentMessageTexts(): string[] {
   // The bridge speaks the narrow grammar: assistant text arrives as
-  // `message.delta` deltas inside batched `thread/delta` notifications.
+  // `item.textDelta` deltas on the `agentMessage` channel inside batched
+  // `thread/delta` notifications.
   const texts: string[] = [];
   for (const line of bridgeLines) {
     if (line.method !== "thread/delta") {
       continue;
     }
     for (const delta of line.params?.deltas ?? []) {
-      if (delta.kind === "message.delta" && delta.channel === "assistant") {
+      if (delta.kind === "item.textDelta" && delta.channel === "agentMessage") {
         texts.push(String(delta.text));
       }
     }

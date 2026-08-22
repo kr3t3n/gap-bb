@@ -18,7 +18,6 @@
 // `bb --server-bind-host 0.0.0.0`. Use it only on a trusted network and stop
 // the backend when you are done.
 import { networkInterfaces } from "node:os";
-import { createFakeAdapter } from "@bb/agent-runtime/test";
 import type { PendingInteraction } from "@bb/domain";
 import { createIntegrationHarness } from "../helpers/harness.js";
 import type { IntegrationHarness } from "../helpers/harness.js";
@@ -195,8 +194,6 @@ async function main(): Promise<void> {
   const serverPort = readPort();
   if (bindHost === "0.0.0.0") warnWildcardBind(serverPort);
   const harness = await createIntegrationHarness({
-    adapterFactory: () =>
-      createFakeAdapter({ supportsNativeUserQuestion: true }),
     bindHost,
     serverPort,
   });

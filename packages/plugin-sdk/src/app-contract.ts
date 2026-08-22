@@ -2,6 +2,7 @@ import type { ComponentPropsWithoutRef, ComponentType, ReactNode } from "react";
 import type {
   PermissionMode,
   PromptInput,
+  ProviderInfo,
   ReasoningLevel,
   ServiceTier,
 } from "@bb/domain";
@@ -207,6 +208,20 @@ export interface SourceCodeLineRange {
   end: number;
 }
 
+/** One complete text side of a diff, resolved by the caller. */
+export interface ExperimentalDiffFileContent {
+  /** File path for this side. May differ between `old` and `new` for a rename. */
+  path: string;
+  /** Complete UTF-8 file contents, including unchanged lines outside the patch. */
+  content: string;
+}
+
+/** Complete text contents for both sides of a diff. */
+export interface ExperimentalDiffFullFileContents {
+  old: ExperimentalDiffFileContent;
+  new: ExperimentalDiffFileContent;
+}
+
 /**
  * Props of the host-owned `experimental_SourceCode` component — BB's source
  * viewer. The host owns syntax highlighting, gutters, wrapping, line-selection
@@ -233,8 +248,9 @@ export interface SourceCodeProps {
  * Props of the host-owned `experimental_Diff` component — BB's diff viewer.
  * The host owns patch normalization (a patch without a `diff --git` header is
  * completed from `path`), syntax highlighting, unified/split presentation,
- * gutters, line-selection presentation, and the live BB code theme. Content
- * that cannot be parsed as a patch degrades to plain monospace text.
+ * gutters, line-selection presentation, optional full-file context expansion,
+ * and the live BB code theme. Content that cannot be parsed as a patch
+ * degrades to plain monospace text.
  */
 export interface DiffProps {
   /** Unified patch text for exactly ONE file. */
@@ -251,6 +267,12 @@ export interface DiffProps {
   overflow?: CodeOverflowMode;
   /** Whether the gutter shows line numbers. Defaults to `true`. */
   showLineNumbers?: boolean;
+  /**
+   * Complete text for both file sides. When present and consistent with the
+   * patch, BB enables expand-context controls between hunks. The caller owns
+   * loading these contents; omit the field to render from the patch alone.
+   */
+  experimental_fullFileContents?: ExperimentalDiffFullFileContents;
   /** Applied to the renderer's root element. */
   className?: string;
 }
@@ -275,7 +297,8 @@ export interface PluginSourceCodeRendererProps {
 
 /**
  * Props passed to an `experimental_diffRenderer` component. `patch` is always
- * a complete single-file unified patch, whatever shape the caller supplied.
+ * a complete single-file unified patch, whatever shape the caller supplied,
+ * and optional full-file context is resolved to an object or `null`.
  */
 export interface PluginDiffRendererProps {
   patch: string;
@@ -283,6 +306,14 @@ export interface PluginDiffRendererProps {
   view: DiffViewMode;
   overflow: CodeOverflowMode;
   showLineNumbers: boolean;
+  /**
+   * Caller-resolved text for both sides, or `null` when the caller supplied
+   * only the patch. A replacement can use this to implement context expansion,
+   * but must verify that the paths and hunk lines agree with `patch` before
+   * treating the contents as complete. BB's original renderer performs that
+   * verification when it mounts.
+   */
+  experimental_fullFileContents: ExperimentalDiffFullFileContents | null;
   /**
    * BB's diff renderer, bound to this request. Render it to delegate
    * conditionally without re-entering plugin replacement resolution.
@@ -700,7 +731,8 @@ export interface PluginSidebarThread {
   originKind: "fork" | null;
   /** The plugin that spawned it, or null for non-plugin origins. */
   originPluginId: string | null;
-  /** The agent provider this thread runs on, e.g. "codex", "claude-code". */
+  /** The agent provider this thread runs on; resolve it through
+   * {@link PluginSdkApp.experimental_useProviders} for a name and icon. */
   providerId: string;
 
   /** The agent is blocked on the user: an approval or a question. */
@@ -785,6 +817,18 @@ export interface PluginSidebarThreadsState {
   status: "loading" | "ready" | "error";
   threads: readonly PluginSidebarThread[];
   projects: readonly PluginSidebarProject[];
+}
+
+/**
+ * The provider directory (see {@link PluginSdkApp.experimental_useProviders}):
+ * every registered agent provider in picker order, as the same `ProviderInfo`
+ * the host's own pickers read. `logoUrl` is server-relative
+ * (`/api/v1/system/providers/<id>/logo`) or null when the provider declared a
+ * glyph or no icon; `strings` carries the provider's declared copy.
+ */
+export interface PluginProvidersState {
+  status: "loading" | "ready" | "error";
+  providers: readonly ProviderInfo[];
 }
 
 /**
@@ -1049,6 +1093,47 @@ export interface PluginMessageActionRegistration {
   run(context: PluginMessageActionContext): void | Promise<void>;
 }
 
+/** Context handed to a `commandPaletteAction`'s `isAvailable` and `run`. */
+export interface PluginCommandPaletteActionContext {
+  /** The thread in view, or null on a surface without one. */
+  threadId: string | null;
+  projectId: string | null;
+  /**
+   * Open one of this plugin's `threadPanelAction` components in the current
+   * thread's side panel, exactly as `messageAction`'s `openPanel` does.
+   *
+   * Returns true when the host accepted the open; false when it declined —
+   * `params` was not a JSON value, the action id names no `threadPanelAction`
+   * of this plugin, or the surface has no side panel. Only the main thread
+   * view has one, and the palette opens anywhere, so guard with `isAvailable`
+   * rather than assuming.
+   */
+  openPanel(options: PluginTargetedPanelActionOpenOptions): boolean;
+}
+
+/**
+ * A row in bb's quick palette (Mod+Shift+P), listed under the plugin's name
+ * beside bb's own commands. Host-rendered: the plugin supplies a title and
+ * `run`, and the host owns matching, ordering, and recency.
+ */
+export interface PluginCommandPaletteActionRegistration {
+  /** Unique within the plugin; letters, digits, `-`, `_`. */
+  id: string;
+  /** The row's label, e.g. "Linear: open issue for this thread". */
+  title: string;
+  /**
+   * Hide the row when it cannot do anything — typically when it needs a thread
+   * and there is none. Called while the palette is open; keep it cheap and
+   * synchronous. Omitted means always listed.
+   */
+  isAvailable?(context: PluginCommandPaletteActionContext): boolean;
+  /**
+   * Runs after the palette closes and focus is restored. Errors (sync or
+   * async) are contained and logged; they never break the palette.
+   */
+  run(context: PluginCommandPaletteActionContext): void | Promise<void>;
+}
+
 /**
  * Supply the inline React mark bb draws for one agent provider.
  *
@@ -1137,6 +1222,13 @@ export interface PluginAppSlots {
   experimental_diffRenderer(registration: PluginDiffRendererRegistration): void;
   messageDirective(registration: PluginMessageDirectiveRegistration): void;
   messageAction(registration: PluginMessageActionRegistration): void;
+  /**
+   * Add a row to the quick palette (see
+   * {@link PluginCommandPaletteActionRegistration}).
+   */
+  commandPaletteAction(
+    registration: PluginCommandPaletteActionRegistration,
+  ): void;
   /**
    * Draw one agent provider's icon with an inline React component instead of
    * its `<img>`-rendered logo file (see
@@ -1495,6 +1587,61 @@ export interface ThreadChatProps {
    * {@link ThreadChatMessageAction}).
    */
   messageActions?: readonly ThreadChatMessageAction[];
+}
+
+// ---------------------------------------------------------------------------
+// experimental_ProviderModelPicker — host-owned execution selection.
+// ---------------------------------------------------------------------------
+
+/** The controlled execution selection resolved by the picker. */
+export interface ExperimentalProviderModelPickerValue {
+  providerId: string;
+  model: string;
+  reasoningLevel: ReasoningLevel;
+  /** Present only when the selected provider supports service tiers. */
+  serviceTier?: ServiceTier;
+}
+
+/** Where the picker resolves the live provider and model catalog. */
+export type ExperimentalProviderModelPickerRouting =
+  | { kind: "host"; hostId: string }
+  | { kind: "environment"; environmentId: string };
+
+/**
+ * Props of the host-owned `experimental_ProviderModelPicker` component.
+ * Provider switches emit one coherent value after the live catalog resolves
+ * its default model, reasoning level, and service-tier capability. Failed or
+ * empty catalogs leave `value` unchanged. Omit `routing` to use bb's
+ * primary-machine routing. Environment routing is required when a provider's
+ * model catalog depends on the selected workspace.
+ */
+export interface ExperimentalProviderModelPickerProps {
+  value: ExperimentalProviderModelPickerValue;
+  onChange(value: ExperimentalProviderModelPickerValue): void;
+  /** Route discovery through an explicit machine or existing environment. */
+  routing?: ExperimentalProviderModelPickerRouting;
+  /** Allow switching providers. Defaults to true; false hides provider tabs. */
+  allowProviderChange?: boolean;
+  /** Horizontal popover alignment. Defaults to `"start"`. */
+  align?: "start" | "center" | "end";
+  /** Render the shared selection summary without allowing changes. */
+  disabled?: boolean;
+  className?: string;
+}
+
+/** Props of BB's controlled, host-resolved permission-mode picker. */
+export interface ExperimentalPermissionModePickerProps {
+  /** Provider whose supported modes determine the available choices. */
+  providerId: string;
+  value: PermissionMode;
+  onChange(value: PermissionMode): void;
+  /** Route capability and machine-ceiling resolution like the execution picker. */
+  routing?: ExperimentalProviderModelPickerRouting;
+  /** Horizontal menu alignment. Defaults to `"end"`. */
+  align?: "start" | "center" | "end";
+  /** Render the resolved mode without allowing changes. */
+  disabled?: boolean;
+  className?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +2008,13 @@ export interface PluginSdkApp {
     threadId: string,
   ): PluginSidebarThreadSplit;
   /**
+   * The provider directory (see {@link PluginProvidersState}). Reads the
+   * host's own cached provider roster, so a plugin that shows a thread's
+   * provider never re-vendors provider names, icons, or copy. Experimental:
+   * see docs/api_to_audit.md.
+   */
+  experimental_useProviders(): PluginProvidersState;
+  /**
    * The host-owned chat component (see {@link ThreadChatProps}). Together
    * with `Markdown`, the only components the SDK ships — everything else
    * stays vendored per §5.5.
@@ -1885,6 +2039,19 @@ export interface PluginSdkApp {
    */
   experimental_NewThreadComposer: ComponentType<NewThreadComposerProps>;
   /**
+   * BB's controlled provider/model/reasoning picker. Provider changes emit
+   * only after the new provider's verified defaults and capabilities resolve,
+   * so `onChange` always receives one coherent value. Experimental: see
+   * docs/api_to_audit.md.
+   */
+  experimental_ProviderModelPicker: ComponentType<ExperimentalProviderModelPickerProps>;
+  /**
+   * BB's controlled permission-mode picker. The host resolves provider
+   * capabilities and the routed machine's permission ceiling. Experimental:
+   * see docs/api_to_audit.md.
+   */
+  experimental_PermissionModePicker: ComponentType<ExperimentalPermissionModePickerProps>;
+  /**
    * The host-owned source viewer (see {@link SourceCodeProps}). Renders
    * supplied source text with BB's syntax highlighting, gutters, and live code
    * theme, and honours an active `experimental_sourceCodeRenderer`
@@ -1893,8 +2060,9 @@ export interface PluginSdkApp {
   experimental_SourceCode: ComponentType<SourceCodeProps>;
   /**
    * The host-owned diff viewer (see {@link DiffProps}). Renders supplied patch
-   * content with BB's normalization, syntax highlighting, unified/split
-   * presentation, and live code theme, and honours an active
+   * content with BB's normalization, optional full-file context expansion,
+   * syntax highlighting, unified/split presentation, and live code theme, and
+   * honours an active
    * `experimental_diffRenderer` replacement. Experimental: see
    * docs/api_to_audit.md.
    */

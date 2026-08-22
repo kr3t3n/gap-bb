@@ -326,7 +326,16 @@ export function createApp(
     });
   });
   app.onError((error) => errorToResponse(error, deps.logger));
-  app.get("/health", (context) => context.json({ ok: true }));
+  // The launch id lets the bb-app launcher prove that the process answering on
+  // its port is the child it just spawned, not another bb server that already
+  // owned the port (its own child then dies with EADDRINUSE a moment later).
+  app.get("/health", (context) =>
+    context.json(
+      deps.config.launchId === undefined
+        ? { ok: true }
+        : { ok: true, launchId: deps.config.launchId },
+    ),
+  );
   app.get("/install.sh", async (context) => {
     const script = await readFile(INSTALL_MACHINE_SCRIPT_PATH);
     return new Response(script, {

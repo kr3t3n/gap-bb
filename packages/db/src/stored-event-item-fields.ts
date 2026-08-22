@@ -48,6 +48,8 @@ export function deriveStoredEventItemFieldsFromSource(
       case "item/completed":
       case "item/backgroundTask/progress":
       case "item/backgroundTask/completed":
+      case "item/delegation/progress":
+      case "item/delegation/completed":
         if (!source.item) {
           throw new Error(`Missing item payload for ${source.type}`);
         }

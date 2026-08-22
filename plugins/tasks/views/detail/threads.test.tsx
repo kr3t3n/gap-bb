@@ -158,6 +158,39 @@ describe("task detail pull request pills", () => {
     expect(slot.queryByRole("link")).toBeNull();
   });
 
+  it("detaches a thread from its card after confirmation and refetches the list", async () => {
+    let detached = false;
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "task/TSK-5" },
+      {
+        rpc: detailRpc({
+          listTaskThreads: () => ({
+            taskThreads: detached
+              ? []
+              : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")],
+          }),
+          taskThreadsDetach: (input: { threadId: string }) => {
+            detached = true;
+            return { threadId: input.threadId };
+          },
+        }),
+      },
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+
+    await waitFor(() => {
+      expect(slot.rpcCalls).toContainEqual({
+        method: "taskThreadsDetach",
+        input: { taskId: TASK_ID, threadId: "thr_worker000" },
+      });
+    });
+    // The section disappears with its last thread.
+    await waitFor(() => expect(slot.queryByText("Worker")).toBeNull());
+  });
+
   it("revalidates PR state on window focus without a task-thread mutation", async () => {
     const basePullRequest = {
       url: "https://github.com/acme/bb/pull/12",

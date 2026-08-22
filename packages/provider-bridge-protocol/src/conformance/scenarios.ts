@@ -5,11 +5,13 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_REQUEST_METHODS,
   initializeResultSchema,
+  negotiateGrammarVersion,
   threadIdentityResultSchema,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
   ThreadEventGrammar,
   THREAD_EVENT_GRAMMAR_RULES,
 } from "../index.js";
+import { ASSEMBLER_GRAMMAR_VERSIONS } from "../assembler/delta-assembler.js";
 import {
   ConformanceClient,
   nextConformanceClientRequestId,
@@ -272,6 +274,7 @@ export async function runHandshakeScenario(
   const id = client.request(BRIDGE_REQUEST_METHODS.initialize, {
     protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
     client: { name: "bb-conformance", version: "0.0.1" },
+    grammarVersions: ASSEMBLER_GRAMMAR_VERSIONS,
   });
   const response = await client.waitForResponse(id);
   const title = "initialize answers a versioned handshake with capabilities";
@@ -301,6 +304,25 @@ export async function runHandshakeScenario(
         "handshake/initialize",
         title,
         `bridge answered protocol version ${parsed.data.protocolVersion}; this kit (and the runtime) require ${PROVIDER_BRIDGE_PROTOCOL_VERSION}`,
+      ),
+    ];
+  }
+  // The same gate for the delta grammar: the runtime refuses a bridge whose
+  // range shares no version with its assembler's, and a bridge that omits
+  // the field reads as the grammar its protocol version shipped with.
+  const [bridgeMin, bridgeMax] = parsed.data.capabilities.grammarVersions;
+  if (
+    negotiateGrammarVersion(
+      ASSEMBLER_GRAMMAR_VERSIONS,
+      parsed.data.capabilities.grammarVersions,
+    ) === null
+  ) {
+    const [runtimeMin, runtimeMax] = ASSEMBLER_GRAMMAR_VERSIONS;
+    return [
+      fail(
+        "handshake/initialize",
+        title,
+        `bridge reported grammarVersions [${bridgeMin}, ${bridgeMax}]; the runtime's assembler speaks [${runtimeMin}, ${runtimeMax}], so the handshake would be refused`,
       ),
     ];
   }

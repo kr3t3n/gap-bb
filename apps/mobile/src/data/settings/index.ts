@@ -12,6 +12,7 @@ export {
 export {
   describeUsageBody,
   formatUsageReset,
+  usageProviderConfigs,
   usageBarTone,
   usageHeading,
   usageWindowValue,

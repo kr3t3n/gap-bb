@@ -1,6 +1,6 @@
 {
   "name": "@get-bb/plugin-sdk",
-  "version": "0.4.10",
+  "version": "0.4.14",
   "homepage": "https://github.com/get-bb/bb#readme",
   "bugs": {
     "url": "https://github.com/get-bb/bb/issues"
@@ -31,6 +31,12 @@
       "types": "./bundled-types/bb-plugin-sdk-provider-bridge.d.ts",
       "import": "./dist/provider-bridge.js",
       "default": "./dist/provider-bridge.js"
+    },
+    "./provider-bridge/testing": {
+      "source": "./src/provider-bridge-testing.ts",
+      "types": "./bundled-types/bb-plugin-sdk-provider-bridge-testing.d.ts",
+      "import": "./dist/provider-bridge-testing.js",
+      "default": "./dist/provider-bridge-testing.js"
     },
     "./app": {
       "source": "./src/app.ts",

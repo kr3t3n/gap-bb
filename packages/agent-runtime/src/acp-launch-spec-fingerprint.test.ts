@@ -73,6 +73,7 @@ describe("bridgeLaunchProcessKey", () => {
       fork: "none",
     },
     providerOptions: { launch: { command: "example" } },
+    envPassthrough: [],
   };
 
   it("changes with provider-owned statics and ignores object key order", () => {
@@ -80,6 +81,7 @@ describe("bridgeLaunchProcessKey", () => {
       bridgeLaunchProcessKey({
         ...base,
         providerOptions: { launch: { command: "example" } },
+    envPassthrough: [],
       }),
     );
     expect(bridgeLaunchProcessKey(base)).not.toBe(

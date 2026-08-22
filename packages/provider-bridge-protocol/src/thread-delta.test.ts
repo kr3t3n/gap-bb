@@ -23,26 +23,33 @@ describe("thread delta schemas", () => {
         exitCode: 0,
         item: { type: "command", command: "ls", cwd: "/repo" },
       },
-      {
-        kind: "turn.plan",
-        steps: [{ step: "Fix bug", status: "active" }],
-      },
       { kind: "item.progress", key: { providerItemId: "tc-1" }, message: "…" },
       {
-        kind: "message.delta",
-        channel: "assistant",
-        streamKey: "assistant",
+        kind: "item.textDelta",
+        key: { channel: "assistant" },
+        channel: "agentMessage",
         text: "hi",
       },
-      { kind: "message.close", channel: "assistant" },
+      {
+        kind: "item.textClose",
+        key: { channel: "assistant" },
+        channel: "agentMessage",
+      },
       {
         kind: "command.outputSnapshot",
         key: { providerItemId: "tc-1" },
         text: "OUT\n",
       },
       {
-        kind: "usage.turn",
-        tokens: {
+        kind: "usage",
+        total: {
+          totalTokens: 10,
+          inputTokens: 5,
+          cachedInputTokens: 0,
+          outputTokens: 5,
+          reasoningOutputTokens: 0,
+        },
+        last: {
           totalTokens: 10,
           inputTokens: 5,
           cachedInputTokens: 0,
@@ -124,13 +131,13 @@ describe("thread delta schemas", () => {
         item: { type: "compaction" },
       }).success,
     ).toBe(true);
-    // message.delta streams are keyed too: an empty streamKey would collide
-    // with another empty-keyed stream on the same channel.
+    // Anonymous text streams are keyed too: an empty channel would collide
+    // with another empty-keyed stream.
     expect(
       threadDeltaSchema.safeParse({
-        kind: "message.delta",
-        channel: "assistant",
-        streamKey: "",
+        kind: "item.textDelta",
+        key: { channel: "" },
+        channel: "agentMessage",
         text: "hi",
       }).success,
     ).toBe(false);
@@ -158,9 +165,9 @@ describe("thread delta schemas", () => {
     ).toBe(false);
     expect(
       threadDeltaSchema.safeParse({
-        kind: "message.delta",
-        channel: "assistant",
-        streamKey: poisoned,
+        kind: "item.textDelta",
+        key: { channel: poisoned },
+        channel: "agentMessage",
         text: "hi",
       }).success,
     ).toBe(false);

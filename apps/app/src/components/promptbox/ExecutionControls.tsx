@@ -11,9 +11,10 @@ import {
 } from "@/components/pickers/ModelReasoningPicker";
 import { type PickerOption } from "@/components/pickers/OptionPicker";
 import type { ModelPickerOption } from "@/components/pickers/model-picker-option";
+import type { ProviderPickerOption } from "@/components/pickers/model-brand-prefix";
 
 interface ExecutionProviderConfig {
-  options?: readonly PickerOption<string>[];
+  options?: readonly ProviderPickerOption[];
   selectedId?: string;
   /** Omit to render the provider as locked (used by FollowUp where the thread is committed). */
   onChange?: (value: string) => void;

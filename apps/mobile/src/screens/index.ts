@@ -8,7 +8,6 @@ export { SettingsScreen } from "./settings/SettingsScreen";
 export { AppearanceSettingsScreen } from "./settings/AppearanceSettingsScreen";
 export { ExperimentsSettingsScreen } from "./settings/ExperimentsSettingsScreen";
 export { GeneralSettingsScreen } from "./settings/GeneralSettingsScreen";
-export { ProviderSettingsScreen } from "./settings/ProviderSettingsScreen";
 export { UpdatesScreen } from "./settings/UpdatesScreen";
 export { UsageLimitsScreen } from "./settings/UsageLimitsScreen";
 export { MachineDetailScreen } from "./machines/MachineDetailScreen";

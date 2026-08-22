@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BRIDGE_JSON_RPC_ERRORS } from "@bb/provider-bridge-protocol";
-import { createBridgeJsonRpcTestHarness } from "@bb/provider-bridge-protocol/testing";
+import { experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import { handleLine } from "./bridge.js";
 
 /**

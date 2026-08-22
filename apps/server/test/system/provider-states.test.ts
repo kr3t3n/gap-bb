@@ -106,7 +106,6 @@ describe("getProviderStates", () => {
           composerActions: [],
         },
         serverCapabilities: {
-          supportsWorkflows: false,
           reasoningLevels: ["medium"],
           fork: "none",
           supportsManualCompaction: false,

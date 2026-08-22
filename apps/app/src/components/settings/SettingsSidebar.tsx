@@ -6,14 +6,11 @@ import {
   SectionSidebarLabel,
   SectionSidebarRow,
 } from "@/components/sidebar/SectionSidebar";
-import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   SETTINGS_ROUTE_PATH,
   getPluginConfigurationRoutePath,
-  getSettingsProviderRoutePath,
   getSettingsRoutePath,
 } from "@/lib/route-paths";
-import { getProviderIconInfo } from "@/lib/provider-icon";
 import { useSettingsNavState } from "./settings-nav";
 import type { SettingsNavState } from "./settings-nav";
 
@@ -29,10 +26,8 @@ interface SettingsSidebarProps {
 type SettingsSidebarNavigation = Pick<
   SettingsNavState,
   | "activePluginId"
-  | "activeProviderId"
   | "activeSection"
   | "pluginEntries"
-  | "providerEntries"
   | "sections"
 >;
 
@@ -51,14 +46,8 @@ export function SettingsSidebarContent({
   navigation,
   testIdPrefix = "settings",
 }: SettingsSidebarContentProps) {
-  const {
-    activePluginId,
-    activeProviderId,
-    activeSection,
-    pluginEntries,
-    providerEntries,
-    sections,
-  } = navigation;
+  const { activePluginId, activeSection, pluginEntries, sections } =
+    navigation;
 
   return (
     <SectionSidebar
@@ -88,28 +77,6 @@ export function SettingsSidebarContent({
               <SectionSidebarIcon name={section.icon} />
             </SectionSidebarRow>
           ))}
-      </div>
-      <div className="mt-4">
-        <SectionSidebarLabel>Providers</SectionSidebarLabel>
-      </div>
-      <div className="mt-1 space-y-0.5">
-        {providerEntries.map((provider) => {
-          const ProviderIcon = getProviderIconInfo(provider.id)?.icon;
-          return (
-            <SectionSidebarRow
-              key={provider.id}
-              active={activeProviderId === provider.id}
-              label={provider.label}
-              to={getSettingsProviderRoutePath(provider.id)}
-            >
-              {ProviderIcon ? (
-                <ProviderIcon className={COARSE_POINTER_ICON_SIZE_CLASS} />
-              ) : (
-                <SectionSidebarIcon name="Code" />
-              )}
-            </SectionSidebarRow>
-          );
-        })}
       </div>
       {pluginEntries.length > 0 ? (
         <>

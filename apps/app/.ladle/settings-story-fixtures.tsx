@@ -28,7 +28,7 @@ import {
   type UpdateInventoryMachine,
 } from "../src/hooks/useUpdateInventory";
 import { createAppQueryClient } from "../src/lib/query-client";
-import { getSettingsProviderRoutePath } from "../src/lib/route-paths";
+import { getSettingsRoutePath } from "../src/lib/route-paths";
 import {
   BbAppUpdateRows,
   MachineUpdatesRows,
@@ -205,9 +205,7 @@ export function SettingsUpdatesStory() {
           runningJobKey={null}
           queuedJobKeys={noJobs}
           onStartInstall={noop}
-          onOpenProvider={(providerId) =>
-            navigate(getSettingsProviderRoutePath(providerId))
-          }
+          onOpenProvider={() => navigate(getSettingsRoutePath("providers"))}
         />
       </MachineUpdatesSection>
     </div>

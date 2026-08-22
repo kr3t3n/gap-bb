@@ -8,10 +8,13 @@ import {
   CUSTOM_THEME_CSS_MAX_LENGTH,
   derivePluginId,
   formatPluginThemeId,
+  isPluginOwnedIconPath,
   type DeclaredCodeTheme,
+  type DynamicTool,
   type JsonValue,
   type PluginThemeMeta,
   type SystemChangeKind,
+  type ThreadEventItemPresentation,
   type ToolCallResponse,
 } from "@bb/domain";
 import {
@@ -143,6 +146,18 @@ export interface PluginSkillRootContribution {
 }
 
 /**
+ * Result of `reload`. `plugins` is the full inventory after the reload. A
+ * reload fails when any targeted plugin is not running its current sources
+ * afterwards: the new sources did not load (the previous instance keeps
+ * serving), or a service of the previous instance never stopped and the
+ * plugin is degraded with nothing loaded (#2029). A plugin the user disabled
+ * stays disabled and is not a failure.
+ */
+export type PluginReloadOutcome =
+  | { ok: true; plugins: PluginListEntry[] }
+  | { ok: false; error: string; plugins: PluginListEntry[] };
+
+/**
  * `fs.watch` is allowed to omit the changed filename. The dev loop still has
  * to reload in that case; `.` is a non-ignored synthetic path representing an
  * unknown change somewhere below the watched plugin root.
@@ -253,7 +268,8 @@ export interface PluginService {
     id: string,
     enabled: boolean,
   ): Promise<PluginListEntry | undefined>;
-  reload(id?: string): Promise<void>;
+  /** Reload one plugin, or every plugin; see PluginReloadOutcome. */
+  reload(id?: string): Promise<PluginReloadOutcome>;
   /** Live API handle for a running plugin (used by later phases and tests). */
   getApi(id: string): BbPluginApi | undefined;
   /**
@@ -951,6 +967,9 @@ function normalizePluginAgentConfiguration(args: {
   };
 }
 
+/** The glyph a bb-injected tool wears when neither it nor its plugin names one. */
+const GENERIC_AGENT_TOOL_GLYPH = "Toolbox";
+
 export function createPluginService(deps: PluginServiceDeps): PluginService {
   const logger = deps.logger;
   const bundledPlugins =
@@ -1105,6 +1124,51 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
    * order within a plugin, deduped first-wins (defensive — registration
    * already blocks cross-plugin collisions and reserved names).
    */
+  /**
+   * The one full presentation a bb-injected tool carries to the bridge
+   * (grammar v3): the plugin's declaration first, then its status labels for
+   * the label, then a generic label; the plugin's branding glyph, then
+   * `Toolbox`. Resolved here, once, so the wire never carries a hole a
+   * bridge would have to fill with a tool-name table of its own.
+   */
+  function resolveAgentToolPresentation(
+    pluginId: string,
+    record: PluginAgentToolRecord,
+  ): ThreadEventItemPresentation {
+    const declared = record.experimentalPresentation;
+    const brandingIcon = loaded.get(pluginId)?.manifest.branding.icon;
+    const glyph =
+      declared?.icon?.glyph ??
+      (brandingIcon !== undefined && !isPluginOwnedIconPath(brandingIcon)
+        ? brandingIcon
+        : GENERIC_AGENT_TOOL_GLYPH);
+    return {
+      label: declared?.label ??
+        record.experimentalStatusLabels ?? {
+          pending: `Running ${record.name}`,
+          completed: `Ran ${record.name}`,
+        },
+      icon: { glyph },
+      ...(declared?.suppress === undefined
+        ? {}
+        : { suppress: declared.suppress }),
+      ...(declared?.tint === undefined ? {} : { tint: declared.tint }),
+    };
+  }
+
+  function toAgentDynamicTool(
+    pluginId: string,
+    record: PluginAgentToolRecord,
+    inputSchema: unknown = record.inputSchema,
+  ): DynamicTool {
+    return {
+      name: record.name,
+      description: record.description,
+      inputSchema,
+      presentation: resolveAgentToolPresentation(pluginId, record),
+    };
+  }
+
   function collectAgentTools(): Array<{
     pluginId: string;
     record: PluginAgentToolRecord;
@@ -1559,14 +1623,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               }
             },
             reloadPlugin: async () => {
-              await withLifecycleLock(row.id, async () => {
+              const problem = await withLifecycleLock(row.id, async () => {
                 const current = getInstalledPlugin(deps.db, row.id);
-                if (current === undefined) return;
+                if (current === undefined) return null;
                 await disposeOne(row.id);
-                await loadOne(current);
+                return loadOne(current);
               });
               await syncCliSkill();
               notifyPluginsChanged();
+              // The dev loop logs a thrown reload as "reload failed: …"
+              // instead of "reloaded" while the plugin is not running.
+              if (problem !== null) throw new Error(problem);
             },
             log: (message) => logger.info(`plugin ${row.id}: ${message}`),
           });
@@ -1773,11 +1840,19 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       const rows = listInstalledPlugins(deps.db).filter(
         (row) => id === undefined || row.id === id,
       );
+      const failures: string[] = [];
       for (const row of rows.sort((a, b) => a.id.localeCompare(b.id))) {
-        await withLifecycleLock(row.id, () => loadOne(row));
+        const problem = await withLifecycleLock(row.id, () => loadOne(row));
+        if (problem !== null) {
+          failures.push(`plugin "${row.id}" reload failed: ${problem}`);
+        }
       }
       await syncCliSkill();
       notifyPluginsChanged();
+      const plugins = list();
+      return failures.length === 0
+        ? { ok: true, plugins }
+        : { ok: false, error: failures.join("; "), plugins };
     },
 
     getApi(id) {
@@ -2075,11 +2150,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     listAgentTools() {
       return collectAgentTools().map(({ pluginId, record }) => ({
         pluginId,
-        tool: {
-          name: record.name,
-          description: record.description,
-          inputSchema: record.inputSchema,
-        },
+        tool: toAgentDynamicTool(pluginId, record),
         instructions: record.instructions,
       }));
     },
@@ -2101,11 +2172,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           tools.push(
             ...pluginTools.map(({ record }) => ({
               pluginId,
-              tool: {
-                name: record.name,
-                description: record.description,
-                inputSchema: record.inputSchema,
-              },
+              tool: toAgentDynamicTool(pluginId, record),
               instructions: record.instructions,
             })),
           );
@@ -2136,12 +2203,11 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             .filter(({ record }) => selectedTools.has(record.name))
             .map(({ record }) => ({
               pluginId,
-              tool: {
-                name: record.name,
-                description: record.description,
-                inputSchema:
-                  parameterOverrides.get(record.name) ?? record.inputSchema,
-              },
+              tool: toAgentDynamicTool(
+                pluginId,
+                record,
+                parameterOverrides.get(record.name) ?? record.inputSchema,
+              ),
               instructions: record.instructions,
             })),
         );

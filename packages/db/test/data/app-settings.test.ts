@@ -30,7 +30,8 @@ describe("app settings data", () => {
       ...defaultAppSettings,
       showKeyboardHints: false,
       steerActiveThreadOnEnter: true,
-      codexMemoryEnabled: false,
+      providerOrder: ["pi"],
+      defaultProviderId: "pi",
     });
     setAppKeybindingOverrides(db, overrides);
 
@@ -38,7 +39,8 @@ describe("app settings data", () => {
       ...defaultAppSettings,
       showKeyboardHints: false,
       steerActiveThreadOnEnter: true,
-      codexMemoryEnabled: false,
+      providerOrder: ["pi"],
+      defaultProviderId: "pi",
     });
     expect(getAppKeybindingOverrides(db)).toEqual(overrides);
 
@@ -63,7 +65,7 @@ describe("app settings data", () => {
       WHERE key = 'showKeyboardHints';
       UPDATE app_settings_values
       SET value = 'not json'
-      WHERE key = 'codexMemoryEnabled';
+      WHERE key = 'providerOrder';
     `);
 
     expect(getAppSettings(db)).toEqual({

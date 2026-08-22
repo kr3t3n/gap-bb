@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +15,7 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_NOTIFICATION_METHODS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   modelListParamsSchema,
   experimental_providerMaintenanceParamsSchema,
@@ -608,6 +608,11 @@ async function handleRequest(
           threadGoalClear: false,
           fork: "checkpoint",
           approvalEnforcedBy: "runtime",
+          // Pi emits the v3 grammar (one streaming dialect, one usage
+          // dialect), and delivers a steer inside the live run (between
+          // assistant turns), which is `inject`.
+          grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+          steerMode: "inject",
         },
       };
       sendResult(request.id, result);
@@ -758,6 +763,7 @@ async function startPiThreadSession(
   }
 
   const sessionOptions = buildSessionOptions({ params, providerThreadId });
+  sessionOptions.recordThreadId = threadId;
   applyDynamicTools(sessionOptions, params.dynamicTools, threadId);
 
   const sessionSerial = nextSessionSerial();
@@ -796,8 +802,11 @@ function sendThreadSessionResult(
   sendThreadIdentity(threadId, providerThreadId);
   // The provider id-space boundary: a new pi session was constructed for this
   // thread (start/resume/fork all announce through here), so the assembler
-  // drops the thread's assembly state — settled item keys, id maps,
-  // accumulated usage — before any of the new session's deltas.
+  // drops the thread's assembly state — settled item keys, id maps — before
+  // any of the new session's deltas, and the translator drops its own
+  // per-thread memory (the running usage total, started-tool shapes) at the
+  // same boundary.
+  piDeltaTranslator.resetThread(threadId);
   sendThreadDeltas(threadId, [{ kind: "session.reset" }]);
   sendResult(id, { providerThreadId, sessionRestorable: true });
 }
@@ -1058,9 +1067,7 @@ async function handleThreadStop(
     // the SDK session is detached on close, so no further events flow. The
     // assembler settles only a turn it actually holds open (or one owed to
     // pending accepted input), so an idle interrupt fabricates nothing.
-    sendThreadDeltas(params.threadId, [
-      { kind: "session.ended" },
-    ]);
+    sendThreadDeltas(params.threadId, [{ kind: "session.ended" }]);
   }
   // A release detaches the idle session and must not fabricate an
   // interruption (#1584): the close path emits no turn events.

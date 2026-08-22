@@ -49,6 +49,12 @@ export interface ServerRuntimeConfig {
   transcriptionModel: string;
   appUrl?: string;
   devAppPort?: number;
+  /**
+   * Per-spawn identity from the bb-app launcher, echoed on /health so the
+   * launcher can tell this server from another one that owns the same port.
+   * Absent when the server was not started by the launcher.
+   */
+  launchId?: string;
 }
 
 export interface AppDeps {

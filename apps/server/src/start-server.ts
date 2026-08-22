@@ -6,6 +6,7 @@ import type { ServerConfig } from "@bb/config/server";
 import { isLoopbackHostname } from "@bb/config/loopback";
 import { toOptionalString } from "@bb/config/strings";
 import { createLogger } from "@bb/logger";
+import { getAppSettings } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
 import { PendingInteractionLifecycle } from "./services/interactions/pending-interactions.js";
@@ -98,6 +99,14 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         { config: runtimeConfig },
         providerId,
       ),
+    // Picker order and the default provider are the user's settings.
+    readUserProviderPreferences: () => {
+      const settings = getAppSettings(db);
+      return {
+        providerOrder: settings.providerOrder,
+        defaultProviderId: settings.defaultProviderId,
+      };
+    },
   });
 
   if (appUrl !== undefined) {
@@ -105,6 +114,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   }
   if (serverConfig.BB_DEV_APP_PORT !== undefined) {
     runtimeConfig.devAppPort = serverConfig.BB_DEV_APP_PORT;
+  }
+  if (serverConfig.BB_SERVER_LAUNCH_ID !== undefined) {
+    runtimeConfig.launchId = serverConfig.BB_SERVER_LAUNCH_ID;
   }
   const terminalSessions = new TerminalSessionLifecycle({
     config: runtimeConfig,

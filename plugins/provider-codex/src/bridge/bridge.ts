@@ -35,6 +35,7 @@
 import {
   isStandaloneBuiltinCompactCommand,
   pendingInteractionResolutionSchema,
+  type DynamicTool,
   type PromptInput,
   type ThreadDelta,
   sanitizeInheritedChildProcessEnv,
@@ -42,6 +43,7 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_NOTIFICATION_METHODS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   modelListParamsSchema,
   experimental_providerInstallationRunParamsSchema,
@@ -76,15 +78,23 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
 import {
+  CODEX_MACOS_PERMISSION_EXTENSION_KIND,
+  summarizeCodexMacOsPermissions,
+} from "../extension-kinds.js";
+import {
   buildCodexInteractiveResponse,
   decodeCodexInteractiveRequest,
+  extractCodexMacOsPermissionRequest,
+  type CodexMacOsPermissionRequest,
 } from "../interactive-requests.js";
 import { parseModelsResponse } from "../models.js";
+import { macOsPermissionPresentation } from "../presentation.js";
 import {
   resolveCodexInstructionOverrides,
   toCodexDynamicTools,
   toCodexPermissionSettings,
   toCodexServiceTier,
+  toCodexThreadPermissionSettings,
   toCodexUserInput,
   type BbThreadForkParams,
   type BbThreadStartParams,
@@ -354,9 +364,7 @@ function describeCodexLaunchError(error: unknown): string {
 interface CodexSessionConstruction {
   cwd: string;
   instructionMode: "append" | "replace";
-  dynamicTools:
-    | { name: string; description: string; inputSchema: unknown }[]
-    | undefined;
+  dynamicTools: DynamicTool[] | undefined;
 }
 
 interface CodexBridgeSession {
@@ -383,8 +391,6 @@ interface CodexBridgeSession {
    * every thread/delta for the session, so these flush right after it.
    */
   pendingPreIdentityDeltas: ThreadDelta[];
-  /** Last `thread/openWork` value sent, so only changes go on the wire. */
-  openWorkReported: boolean;
   closing: boolean;
 }
 
@@ -422,15 +428,6 @@ function currentSession(
 
 function releaseSession(session: CodexBridgeSession): void {
   session.closing = true;
-  // The session is gone, so its work is too. Retract the open-work claim or
-  // the runtime keeps refusing to reap a thread that no longer exists here.
-  if (session.openWorkReported) {
-    session.openWorkReported = false;
-    sendNotification(BRIDGE_NOTIFICATION_METHODS.threadOpenWork, {
-      threadId: session.bbThreadId,
-      open: false,
-    });
-  }
   if (sessionsByBbThreadId.get(session.bbThreadId) === session) {
     sessionsByBbThreadId.delete(session.bbThreadId);
   }
@@ -482,8 +479,12 @@ function decodeCodexOptions(
 
 /**
  * The construction-scoped option facts. A turn arriving with a different set
- * rebuilds the provider session, reported via session/replaced. Model and
- * serviceTier are deliberately absent: they ride every codex turn/start.
+ * rebuilds the provider session, reported via session/replaced. Compare the
+ * effective Codex permissions, not bb's source policy: auto-reviewed user and
+ * system turns differ in permissionEscalation (`ask` versus `deny`) but both
+ * map to the same Codex construction settings and must keep one session.
+ * Model and serviceTier are deliberately absent: they ride every codex
+ * turn/start.
  *
  * envVars is deliberately absent too: the runtime builds the shell
  * environment only for session-construction commands and sends
@@ -496,15 +497,15 @@ function constructionSignature(
   cwd: string,
   sessionOptions: CodexSessionOptions,
 ): string {
+  const permissionSettings = toCodexThreadPermissionSettings(sessionOptions);
   return JSON.stringify({
     cwd,
     reasoningLevel: sessionOptions.reasoningLevel ?? null,
     memoryEnabled: sessionOptions.memoryEnabled ?? null,
     providerSubagentsEnabled: sessionOptions.providerSubagentsEnabled ?? null,
-    permissionMode: sessionOptions.permissionMode,
-    permissionScope: sessionOptions.permissionScope,
-    approvalReviewer: sessionOptions.approvalReviewer,
-    permissionEscalation: sessionOptions.permissionEscalation,
+    approvalPolicy: permissionSettings.approvalPolicy,
+    approvalsReviewer: permissionSettings.approvalsReviewer,
+    sandbox: permissionSettings.sandbox,
   });
 }
 
@@ -546,16 +547,17 @@ function sendThreadDeltas(
     // may be thread-scoped; token usage is turn-only and, on resume,
     // duplicates the snapshot bb already persisted for that turn, so drop it
     // (#1727). The fresh session has no current or last turn yet, so the
-    // context-window delta assembles thread-scoped.
-    if (session.awaitingReplayedUsage && delta.kind === "usage.exact") {
-      outDeltas.push({
-        kind: "contextWindow",
-        used: delta.last.totalTokens,
-        size: delta.modelContextWindow,
-        estimated: false,
-        attach: "currentOrLast",
-      });
-      continue;
+    // context-window delta, stripped of its vouched turn, assembles
+    // thread-scoped.
+    if (session.awaitingReplayedUsage) {
+      if (delta.kind === "usage") {
+        continue;
+      }
+      if (delta.kind === "contextWindow") {
+        const { providerTurnId: _replayedTurnId, ...threadScoped } = delta;
+        outDeltas.push(threadScoped);
+        continue;
+      }
     }
     outDeltas.push(delta);
   }
@@ -566,30 +568,6 @@ function sendThreadDeltas(
   sendNotification(THREAD_DELTA_NOTIFICATION_METHOD, {
     threadId: session.bbThreadId,
     deltas: outDeltas,
-  });
-}
-
-/**
- * Codex models native subagents as tool calls, not as bb background tasks, so
- * the runtime's own background-work tracker cannot see them. Report the
- * current value after every batch of translated events: a session release must
- * not stop this process while a child agent still runs or still owes a
- * followup turn.
- */
-function reportOpenThreadWork(session: CodexBridgeSession): void {
-  const codexThreadId = session.codexThreadId;
-  const open =
-    codexThreadId !== null &&
-    session.translator.hasOpenThreadWork({
-      providerThreadId: codexThreadId,
-    });
-  if (open === session.openWorkReported) {
-    return;
-  }
-  session.openWorkReported = open;
-  sendNotification(BRIDGE_NOTIFICATION_METHODS.threadOpenWork, {
-    threadId: session.bbThreadId,
-    open,
   });
 }
 
@@ -658,7 +636,6 @@ function handleChildNotification(
     session,
     session.translator.translateEvent(toProviderRuntimeEvent(method, params)),
   );
-  reportOpenThreadWork(session);
 }
 
 const codexChildToolCallParamsSchema = z.object({
@@ -719,6 +696,19 @@ function handleChildRequest(
     return;
   }
 
+  // A macOS permission profile on a command approval is codex vocabulary
+  // bb's permission layer cannot grant: it goes on the timeline as its own
+  // row (`provider-codex/macos-permission`) and the approval proceeds for
+  // the command itself.
+  const macOsPermission = extractCodexMacOsPermissionRequest({
+    id: 0,
+    method,
+    params,
+  });
+  if (macOsPermission !== null) {
+    sendThreadDeltas(session, [buildMacOsPermissionItemDelta(macOsPermission)]);
+  }
+
   let decoded: DecodedInteractiveRequest | null;
   try {
     decoded = decodeCodexInteractiveRequest({ id: 0, method, params });
@@ -759,6 +749,32 @@ function handleChildRequest(
     });
 }
 
+/**
+ * The `provider-codex/macos-permission` row for a command approval that asked
+ * for macOS capabilities. Keyed by the approval's codex item id under its own
+ * channel, so a re-asked approval for the same command reuses the row.
+ */
+function buildMacOsPermissionItemDelta(
+  request: CodexMacOsPermissionRequest,
+): ThreadDelta {
+  return {
+    kind: "item.close",
+    key: {
+      providerItemId: `${request.item.approvalItemId}:macos-permission`,
+    },
+    status: "completed",
+    item: {
+      type: "extension",
+      kind: CODEX_MACOS_PERMISSION_EXTENSION_KIND,
+      payload: request.item,
+    },
+    presentation: macOsPermissionPresentation(
+      summarizeCodexMacOsPermissions(request.item.permissions),
+    ),
+    providerTurnId: request.turnId,
+  };
+}
+
 function handleChildExit(
   bbThreadId: string,
   serial: number,
@@ -795,16 +811,18 @@ function handleChildExit(
       : {}),
     message,
   });
-  // Nothing runs behind a dead child, so drop its live state and retract the
-  // open-work claim. The runtime's open-work view is level-triggered: without
-  // this the thread is never idle-reaped, and a stale tracked subagent would
-  // re-raise the claim on the next report.
+  // Nothing runs behind a dead child, so drop its live state and settle every
+  // delegation it still had open as failed: open delegations are open work
+  // for the runtime's reaper, and without the closes the thread would never
+  // be idle-reaped.
   if (session.codexThreadId !== null) {
-    session.translator.clearExitedChildThreadState({
-      providerThreadId: session.codexThreadId,
-    });
+    sendThreadDeltas(
+      session,
+      session.translator.clearExitedChildThreadState({
+        providerThreadId: session.codexThreadId,
+      }),
+    );
   }
-  reportOpenThreadWork(session);
   // The session entry stays (with its identity) so the next turn/start can
   // restore the thread from its rollout via session/replaced.
 }
@@ -814,6 +832,8 @@ function handleChildExit(
 // ---------------------------------------------------------------------------
 
 function spawnChildConnection(callbacks: {
+  /** The bb thread the child serves (record-mode scope); null when none. */
+  recordThreadId: string | null;
   onNotification: (method: string, params: unknown) => void;
   onRequest: (
     method: string,
@@ -889,7 +909,7 @@ interface ConstructThreadSessionArgs {
   cwd: string;
   options: BridgeExecutionOptions;
   instructionMode: "append" | "replace";
-  dynamicTools?: { name: string; description: string; inputSchema: unknown }[];
+  dynamicTools?: DynamicTool[];
   request: CodexSessionConstructionRequest;
 }
 
@@ -912,6 +932,14 @@ async function constructThreadSession(
   const translator = createCodexEventTranslator({
     additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots,
   });
+  translator.configureInjectedTools(
+    (args.dynamicTools ?? []).map((tool) => ({
+      name: tool.name,
+      ...(tool.presentation === undefined
+        ? {}
+        : { presentation: tool.presentation }),
+    })),
+  );
   const session: CodexBridgeSession = {
     bbThreadId: args.threadId,
     codexThreadId:
@@ -932,7 +960,6 @@ async function constructThreadSession(
     awaitingReplayedUsage: args.request.kind !== "start",
     identityAnnounced: false,
     pendingPreIdentityDeltas: [],
-    openWorkReported: false,
     closing: false,
   };
   sessionsByBbThreadId.set(args.threadId, session);
@@ -948,6 +975,7 @@ async function constructThreadSession(
   sendThreadDeltas(session, [{ kind: "session.reset" }]);
 
   const connection = spawnChildConnection({
+    recordThreadId: args.threadId,
     onNotification: (method, params) =>
       handleChildNotification(args.threadId, serial, method, params),
     onRequest: (method, params, responder) =>
@@ -1107,6 +1135,7 @@ async function withMaintenanceChild<T>(
   fn: (connection: CodexAppServerConnection) => Promise<T>,
 ): Promise<T> {
   const connection = spawnChildConnection({
+    recordThreadId: null,
     onNotification: () => {},
     onRequest: (_method, _params, responder) => {
       responder.error(
@@ -1144,6 +1173,7 @@ async function getModelListConnection(): Promise<CodexAppServerConnection> {
 
   const connectionPromise = (async () => {
     const connection = spawnChildConnection({
+      recordThreadId: null,
       onNotification: () => {},
       onRequest: (_method, _params, responder) => {
         responder.error(
@@ -1236,6 +1266,12 @@ function handleInitialize(id: string | number): void {
       threadGoalClear: true,
       fork: "checkpoint",
       approvalEnforcedBy: "runtime",
+      // grammarVersions [3, 3] — this bridge emits the v3 delta grammar (one
+      // streaming dialect, one usage dialect; the v3 item shapes land per
+      // bridge in WS1b). steerMode "inject" — codex `turn/steer` injects into
+      // the live turn natively.
+      grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+      steerMode: "inject",
     },
   };
   sendResult(id, result);

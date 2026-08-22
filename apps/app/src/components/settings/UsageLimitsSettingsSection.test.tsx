@@ -29,6 +29,7 @@ function provider(
   id: string,
   displayName: string,
   supportsUsage = true,
+  strings?: ProviderInfo["strings"],
 ): ProviderInfo {
   return {
     id,
@@ -48,17 +49,43 @@ function provider(
       permissionModes: ["full"],
     },
     composerActions: [],
+    ...(strings === undefined ? {} : { strings }),
   };
 }
+
+/** The first-party roster with the copy its plugins declare. */
+const FIRST_PARTY_PROVIDERS: ProviderInfo[] = [
+  provider("codex", "Codex", true, {
+    signInHint: "Run `codex` to sign in and see your usage.",
+    expiredHint: "Your Codex session expired. Run `codex`, then reload usage.",
+    installUrl: "https://developers.openai.com/codex/cli",
+  }),
+  provider("claude-code", "Claude Code", true, {
+    signInHint: "Run `claude` to sign in and see your usage.",
+    expiredHint: "Your Claude session expired. Run `claude`, then reload usage.",
+    installUrl: "https://claude.com/claude-code",
+  }),
+  provider("acp-cursor", "Cursor", true, {
+    signInHint: "Run `cursor-agent login` to sign in and see your usage.",
+    expiredHint:
+      "Your Cursor session expired. Run `cursor-agent login`, then reload usage.",
+    installUrl: "https://cursor.com/docs/cli/installation",
+  }),
+];
 
 afterEach(cleanup);
 
 function renderContent(
   props: ComponentProps<typeof UsageLimitsSettingsSectionContent>,
 ) {
+  // The roster (names and declared copy) comes from the provider list; a
+  // test that passes none gets the first-party roster, as the live query would.
   return render(
     <TooltipProvider>
-      <UsageLimitsSettingsSectionContent {...props} />
+      <UsageLimitsSettingsSectionContent
+        providers={FIRST_PARTY_PROVIDERS}
+        {...props}
+      />
     </TooltipProvider>,
   );
 }
@@ -197,10 +224,9 @@ describe("UsageLimitsSettingsSectionContent", () => {
   it("renders completed providers while their peers are still loading", () => {
     renderContent({
       usage: { codex: { status: "unauthenticated" } },
-      providers: [
-        provider("codex", "Codex"),
-        provider("claude-code", "Claude Code"),
-      ],
+      providers: FIRST_PARTY_PROVIDERS.filter(
+        (entry) => entry.id === "codex" || entry.id === "claude-code",
+      ),
       providerStates: {
         codex: { isError: false, isLoading: false },
         "claude-code": { isError: false, isLoading: true },
@@ -222,6 +248,7 @@ describe("UsageLimitsSettingsSectionContent", () => {
   it("shows an initial loading message before the provider list arrives", () => {
     renderContent({
       usage: {},
+      providers: [],
       isLoading: true,
       isError: false,
       isProviderListLoading: true,

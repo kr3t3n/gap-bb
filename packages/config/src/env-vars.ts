@@ -190,6 +190,13 @@ export const BB_APP_VERSION_ENV = defineEnvVar<string>({
   parse: parseNonEmptyStringEnvValue,
 });
 
+export const BB_SERVER_LAUNCH_ID_ENV = defineEnvVar<string>({
+  description:
+    "Internal per-spawn identity the bb-app launcher hands its server child. The server echoes it on /health so the launcher can tell its own child apart from another bb server that already owns the port.",
+  name: "BB_SERVER_LAUNCH_ID",
+  parse: parseNonEmptyStringEnvValue,
+});
+
 export const BB_APP_SURFACE_ENV = defineEnvVar<AppSurface>({
   description:
     "Internal launcher marker for telemetry attribution. Set by bb-app and desktop launchers.",

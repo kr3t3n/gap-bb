@@ -18,6 +18,7 @@ import type {
   PluginRealtimeConnectionState,
   PluginRpcContract,
   PluginRpcClient,
+  PluginProvidersState,
   PluginSettingsState,
   ExperimentalAppPanel,
   ExperimentalFixedTabTargetState,
@@ -35,6 +36,7 @@ import {
   usePluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import { sdk } from "@/lib/sdk";
+import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { requestComposerFocus } from "@/lib/composer-focus-requests";
 import { setComposerTextEffect } from "@/lib/composer-text-effects";
 import {
@@ -273,6 +275,27 @@ export function useSettings(): PluginSettingsState {
     values: query.data ?? undefined,
     isLoading: query.isLoading,
   };
+}
+
+const EMPTY_PROVIDERS: readonly never[] = [];
+
+/**
+ * The provider directory for plugins: the host's own provider roster query
+ * (shared cache, realtime invalidation), in picker order.
+ */
+export function useProviders(): PluginProvidersState {
+  const query = useSystemProviders();
+  const providers = query.data;
+  return useMemo<PluginProvidersState>(
+    () =>
+      providers === undefined
+        ? {
+            status: query.isError ? "error" : "loading",
+            providers: EMPTY_PROVIDERS,
+          }
+        : { status: "ready", providers },
+    [providers, query.isError],
+  );
 }
 
 export function useBbContext(): BbContext {

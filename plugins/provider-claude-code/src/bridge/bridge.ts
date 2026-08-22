@@ -29,6 +29,7 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_NOTIFICATION_METHODS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   threadStartParamsSchema as canonicalThreadStartParamsSchema,
   turnStartParamsSchema as canonicalTurnStartParamsSchema,
@@ -855,6 +856,17 @@ function createThreadSession(args: CreateThreadSessionArgs): ThreadSession {
     }),
   );
 
+  // The session's bb-injected tools: a call to one is a bb tool and reads the
+  // way its definition says (Q31).
+  const translator = createClaudeDeltaTranslator();
+  translator.configureInjectedTools(
+    (args.sessionConstructionConfig.dynamicTools ?? []).map((tool) => ({
+      name: tool.name,
+      ...(tool.presentation === undefined
+        ? {}
+        : { presentation: tool.presentation }),
+    })),
+  );
   const threadSession: ThreadSession = {
     session,
     sessionConstructionConfig: args.sessionConstructionConfig,
@@ -863,7 +875,7 @@ function createThreadSession(args: CreateThreadSessionArgs): ThreadSession {
     closing: false,
     restartBeforeNextTurnReason: null,
     streamEnded: false,
-    translator: createClaudeDeltaTranslator(),
+    translator,
     pendingInteractiveRequests: new Map(),
     permissionEscalation: args.permissionEscalation,
     permissionEscalationByAgentId: new Map(),
@@ -1148,6 +1160,7 @@ function buildTrackedSessionOptions(
     env,
   );
   addPermissionEscalationTrackingHooks(sessionOptions, threadIdRef);
+  sessionOptions.recordThreadId = () => threadIdRef.current;
   return sessionOptions;
 }
 
@@ -1665,6 +1678,31 @@ function createForwardUserQuestionRequest(
 }
 
 /**
+ * Enter Plan mode when a later turn of a live session carries `/plan`.
+ *
+ * Session construction used to be the only place the permission mode was
+ * applied, so a mid-conversation `/plan` stripped the mention and pushed the
+ * prompt into a session still in the user's preset mode: Claude never entered
+ * Plan mode and never proposed a plan through ExitPlanMode. The switch must
+ * land before the prompt is pushed, so a refused control request fails the
+ * turn instead of running it in the preset mode. `approvedPlanPermissionMode`
+ * keeps the preset for the approval to restore.
+ */
+async function enterPlanModeIfRequested(
+  threadSession: ThreadSession,
+  params: TurnStartParams | TurnSteerParams,
+): Promise<void> {
+  if (
+    params.claudeCodePermissionMode !== "plan" ||
+    threadSession.permissionMode === "plan"
+  ) {
+    return;
+  }
+  await threadSession.session.setPermissionMode("plan");
+  threadSession.permissionMode = "plan";
+}
+
+/**
  * Leave Plan mode once the user approves a plan.
  *
  * `/plan` overrides the session permission mode for the life of the session:
@@ -1902,6 +1940,12 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
           threadGoalClear: false,
           fork: "checkpoint",
           approvalEnforcedBy: "provider",
+          // grammarVersions [3, 3] — this bridge emits the v3 delta grammar
+          // (one streaming dialect, one usage dialect; the v3 item shapes land
+          // per bridge in WS1b). steerMode "inject" — a steer joins the live
+          // SDK prompt iterator mid-turn.
+          grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+          steerMode: "inject",
         },
       };
       sendResult(request.id, result);
@@ -2245,6 +2289,7 @@ async function runTurnStart(
       params.threadId,
       withTurnLiveSessionSettings(threadSession.liveSettings, params),
     );
+    await enterPlanModeIfRequested(threadSession, params);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(id, -32000, message);
@@ -2317,6 +2362,7 @@ async function runTurnSteer(
       params.threadId,
       withTurnLiveSessionSettings(threadSession.liveSettings, params),
     );
+    await enterPlanModeIfRequested(threadSession, params);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(id, -32000, message);

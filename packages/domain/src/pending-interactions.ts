@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { jsonValueSchema } from "./json-value.js";
 import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "./plugin-interaction-limits.js";
+import { threadEventItemPresentationSchema } from "./item-presentation.js";
+import { extensionKindSchema } from "./provider-extension-kind.js";
 
 export { PLUGIN_INTERACTION_MAX_TITLE_LENGTH };
 
@@ -163,11 +165,31 @@ const pendingInteractionPlanApprovalSubjectSchema = z.object({
   planFilePath: z.string().min(1).nullable(),
 });
 
+/**
+ * A generic tool call waiting for approval — any tool that is neither a
+ * command nor a file change (an MCP tool, a provider-native tool with no core
+ * kind). Policy-bearing like the other approval subjects: `auto` approves it,
+ * `accept-edits` asks. `presentation` is the bridge's declarative rendering
+ * of the call, so the approval banner reads the same on every client with no
+ * tool-name table. The ACP bridge raises it for every permission that is
+ * neither a command nor a file change; WS5 (interactions) rewires the rest.
+ */
+export const pendingInteractionToolUseApprovalSubjectSchema = z.object({
+  kind: z.literal("tool_use"),
+  itemId: z.string().min(1),
+  tool: z.string().min(1),
+  presentation: threadEventItemPresentationSchema,
+});
+export type PendingInteractionToolUseApprovalSubject = z.infer<
+  typeof pendingInteractionToolUseApprovalSubjectSchema
+>;
+
 const pendingInteractionApprovalSubjectSchema = z.discriminatedUnion("kind", [
   pendingInteractionCommandApprovalSubjectSchema,
   pendingInteractionFileChangeApprovalSubjectSchema,
   pendingInteractionPermissionGrantApprovalSubjectSchema,
   pendingInteractionPlanApprovalSubjectSchema,
+  pendingInteractionToolUseApprovalSubjectSchema,
 ]);
 export type PendingInteractionApprovalSubject = z.infer<
   typeof pendingInteractionApprovalSubjectSchema
@@ -335,6 +357,65 @@ export const pendingInteractionPayloadSchema = z.discriminatedUnion("kind", [
 ]);
 export type PendingInteractionPayload = z.infer<
   typeof pendingInteractionPayloadSchema
+>;
+
+// ---------------------------------------------------------------------------
+// The interaction split (docs/provider-plugin-api.md §4).
+//
+// Approvals are the closed, policy-bearing set above: permission modes decide
+// them without the user. Requests are the open set below: they always reach
+// the user (or the plugin that owns them) and a permission mode never answers
+// one. `pendingInteractionPayloadSchema` stays the wire shape every producer
+// emits today; WS5 rewires producers onto this family and the single
+// interaction-lifecycle event, then deletes the `plan` approval subject.
+// ---------------------------------------------------------------------------
+
+/**
+ * A finished plan waiting for the user's verdict, as a request rather than an
+ * approval: no permission mode may auto-answer "ready to code?". Same fields
+ * as `pendingInteractionPlanApprovalSubjectSchema`, which it replaces in WS5.
+ */
+export const planReviewInteractionRequestPayloadSchema = z.object({
+  kind: z.literal("plan_review"),
+  itemId: z.string().min(1),
+  /** The plan body, as Markdown. */
+  plan: z.string().min(1),
+  /** Where the provider saved the plan, or null when it kept it in memory. */
+  planFilePath: z.string().min(1).nullable(),
+});
+export type PlanReviewInteractionRequestPayload = z.infer<
+  typeof planReviewInteractionRequestPayloadSchema
+>;
+
+/**
+ * A plugin-defined request: `kind` is the namespaced `"<pluginId>/<name>"`
+ * and the plugin renders it through the existing `pendingInteraction` slot.
+ * Any bridge may raise any kind; the server resolves the renderer by the
+ * plugin id prefix. The `title` is the client's fallback when no renderer is
+ * installed.
+ */
+export const pluginExtensionInteractionRequestPayloadSchema = z.object({
+  kind: extensionKindSchema,
+  title: z.string().trim().min(1).max(PLUGIN_INTERACTION_MAX_TITLE_LENGTH),
+  data: jsonValueSchema,
+});
+export type PluginExtensionInteractionRequestPayload = z.infer<
+  typeof pluginExtensionInteractionRequestPayloadSchema
+>;
+
+/**
+ * The open request family. A plain union rather than a discriminated one
+ * because the plugin member's `kind` is a namespace pattern, not a literal;
+ * the core literals (`user_question`, `plan_review`) contain no "/" so the
+ * members never overlap.
+ */
+export const interactionRequestPayloadSchema = z.union([
+  userQuestionPendingInteractionPayloadSchema,
+  planReviewInteractionRequestPayloadSchema,
+  pluginExtensionInteractionRequestPayloadSchema,
+]);
+export type InteractionRequestPayload = z.infer<
+  typeof interactionRequestPayloadSchema
 >;
 type AnyPendingInteractionPayload =
   | PendingInteractionPayload

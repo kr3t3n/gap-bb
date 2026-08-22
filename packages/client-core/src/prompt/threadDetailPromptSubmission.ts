@@ -64,7 +64,12 @@ interface BuildSendQueuedMessageByIdRequestArgs {
   threadId: string;
 }
 
+interface BuildSteerFollowUpRequestArgs extends BaseFollowUpRequestArgs {
+  execution: FollowUpExecutionSelection;
+}
+
 interface BuildFollowUpShortcutRequestArgs extends BaseFollowUpRequestArgs {
+  execution: FollowUpExecutionSelection;
   queuedMessages: readonly QueuedMessageForSend[];
 }
 
@@ -222,17 +227,22 @@ export function buildAutoFollowUpRequest({
 }
 
 function buildSteerFollowUpRequest({
+  execution,
   input,
   threadId,
-}: BaseFollowUpRequestArgs): SendMessageMutationRequest | null {
+}: BuildSteerFollowUpRequestArgs): SendMessageMutationRequest | null {
   if (input.length === 0) {
     return null;
   }
 
+  // The composer picker stays editable while a turn runs. Without the
+  // selection the server resolves the steer from the thread's last execution,
+  // i.e. the active turn's tuple, and silently ignores the new pick.
   return {
     id: threadId,
     input,
     mode: "steer-if-active",
+    ...buildSharedThreadExecutionRequestFields(execution),
   };
 }
 
@@ -269,11 +279,16 @@ function buildSendQueuedMessageByIdRequest({
  * head through the same auto path as the queued-card "Send now" action.
  */
 export function buildFollowUpShortcutRequest({
+  execution,
   input,
   queuedMessages,
   threadId,
 }: BuildFollowUpShortcutRequestArgs): FollowUpShortcutRequest | null {
-  const draftRequest = buildSteerFollowUpRequest({ input, threadId });
+  const draftRequest = buildSteerFollowUpRequest({
+    execution,
+    input,
+    threadId,
+  });
   if (draftRequest) {
     return { kind: "draft", request: draftRequest };
   }

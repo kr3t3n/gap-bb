@@ -4,7 +4,6 @@ import { AppPageHeader } from "@/components/layout/AppPageHeader";
 import { SettingsSidebarContent } from "@/components/settings/SettingsSidebar";
 import {
   SETTINGS_NAV_SECTIONS,
-  SETTINGS_PROVIDER_ENTRIES,
   type SettingsSectionId,
 } from "@/components/settings/settings-nav";
 import {
@@ -16,13 +15,11 @@ import { PageShell } from "@/components/ui/page-shell";
 import {
   SETTINGS_ROUTE_PATH,
   SETTINGS_MACHINE_ROUTE_PATH,
-  getSettingsProviderRoutePath,
   getSettingsRoutePath,
 } from "@/lib/route-paths";
 
 export type SettingsStoryRoute =
   | { kind: "machine"; id: string }
-  | { kind: "provider"; id: (typeof SETTINGS_PROVIDER_ENTRIES)[number]["id"] }
   | { kind: "section"; id: SettingsSectionId };
 
 /** Resolve the story's real Settings links without depending on live app data. */
@@ -32,13 +29,6 @@ export function useSettingsStoryRoute(): SettingsStoryRoute {
   if (machineMatch?.params.hostId !== undefined) {
     return { kind: "machine", id: machineMatch.params.hostId };
   }
-  const provider = SETTINGS_PROVIDER_ENTRIES.find(
-    (entry) => getSettingsProviderRoutePath(entry.id) === pathname,
-  );
-  if (provider !== undefined) {
-    return { kind: "provider", id: provider.id };
-  }
-
   const section = SETTINGS_NAV_SECTIONS.find((entry) =>
     entry.id === "general"
       ? pathname === SETTINGS_ROUTE_PATH
@@ -60,14 +50,7 @@ export function SettingsStoryChrome({
 }) {
   const route = useSettingsStoryRoute();
   const resolvedActiveSection =
-    activeSection ??
-    (route.kind === "section"
-      ? route.id
-      : route.kind === "machine"
-        ? "machines"
-        : null);
-  const activeProviderId =
-    activeSection === undefined && route.kind === "provider" ? route.id : null;
+    activeSection ?? (route.kind === "section" ? route.id : "machines");
 
   return (
     <SidebarProvider
@@ -79,10 +62,8 @@ export function SettingsStoryChrome({
         isResizing={false}
         navigation={{
           activePluginId: null,
-          activeProviderId,
           activeSection: resolvedActiveSection,
           pluginEntries: [],
-          providerEntries: SETTINGS_PROVIDER_ENTRIES,
           sections: SETTINGS_NAV_SECTIONS,
         }}
         onResizeMouseDown={() => {}}

@@ -293,6 +293,104 @@ export function parseExecLifecycleEvent(
   return null;
 }
 
+/** The neutral tool name a v3 delegation row carries: it has no tool. */
+export const DELEGATION_ITEM_TOOL_NAME = "delegation";
+
+function parseDelegationItemLifecycleEvent(
+  decoded: ThreadEvent,
+  meta: EventMeta,
+  parentToolCallId: string | undefined,
+): ExecLifecycleEvent | null {
+  if (
+    decoded.type !== "item/started" &&
+    decoded.type !== "item/completed" &&
+    decoded.type !== "item/delegation/completed"
+  ) {
+    return null;
+  }
+  if (decoded.item.type !== "delegation") {
+    return null;
+  }
+  const kind = decoded.type === "item/started" ? "begin" : "end";
+  const status =
+    kind === "end" ? itemStatusToExecStatus(decoded.item.status) : "pending";
+  return {
+    kind,
+    call: {
+      kind: "delegation",
+      callId: decoded.item.id,
+      toolName: DELEGATION_ITEM_TOOL_NAME,
+      description: decoded.item.label,
+      output: kind === "end" ? decoded.item.summary : undefined,
+      completedAt: kind === "end" ? meta.createdAt : null,
+      status,
+      ...(parentToolCallId ? { parentToolCallId } : {}),
+    },
+  };
+}
+
+/**
+ * Grammar v3 `fileRead` and `search` items (Claude Read/Grep/Glob, and every
+ * provider's reads and searches as its bridge migrates) project to the
+ * tool-call row with the parsed intent the legacy structured tool calls
+ * produced, so the activity bundles ("Read x", "Searched for y") keep
+ * rendering until the presentation-driven projection lands. The row's tool
+ * name is the item kind: a v3 item has no tool.
+ */
+function parseExplorationItemLifecycleEvent(
+  decoded: ThreadEvent,
+  meta: EventMeta,
+  parentToolCallId: string | undefined,
+): ExecLifecycleEvent | null {
+  if (decoded.type !== "item/started" && decoded.type !== "item/completed") {
+    return null;
+  }
+  const item = decoded.item;
+  if (item.type !== "fileRead" && item.type !== "search") {
+    return null;
+  }
+  const kind = decoded.type === "item/started" ? "begin" : "end";
+  const parsedIntents: EventProjectionToolParsedIntent[] =
+    item.type === "fileRead"
+      ? [
+          {
+            type: "read",
+            cmd: item.cmd ?? `Read ${item.path}`,
+            name: item.type,
+            path: item.path,
+          },
+        ]
+      : item.mode === "content"
+        ? [
+            {
+              type: "search",
+              cmd: item.cmd ?? `Grep ${item.query}`,
+              query: item.query,
+              path: item.path ?? null,
+            },
+          ]
+        : [
+            {
+              type: "list_files",
+              cmd: item.cmd ?? `Glob ${item.query}`,
+              path: item.path ?? item.query,
+            },
+          ];
+  return {
+    kind,
+    call: {
+      kind: "tool-call",
+      callId: item.id,
+      toolName: item.type,
+      toolArgs: null,
+      parsedIntents,
+      completedAt: kind === "end" ? meta.createdAt : null,
+      status: kind === "end" ? itemStatusToExecStatus(item.status) : "pending",
+      ...(parentToolCallId ? { parentToolCallId } : {}),
+    },
+  };
+}
+
 export function parseToolCallLifecycleEvent(
   decoded: ThreadEvent,
   meta: EventMeta,
@@ -313,6 +411,29 @@ export function parseToolCallLifecycleEvent(
         ...(parentToolCallId ? { parentToolCallId } : {}),
       },
     };
+  }
+
+  // A grammar v3 `delegation` item (codex native sub-agents, and every
+  // provider's delegated work once its bridge migrates): the child's label is
+  // the row description and the child's terminal summary is its output. The
+  // full v3 projection (presentation-driven rows for every kind) is a later
+  // workstream; this keeps delegation rows — and the child content nested
+  // under them — rendering in the meantime.
+  const delegationEvent = parseDelegationItemLifecycleEvent(
+    decoded,
+    meta,
+    parentToolCallId,
+  );
+  if (delegationEvent) {
+    return delegationEvent;
+  }
+  const explorationEvent = parseExplorationItemLifecycleEvent(
+    decoded,
+    meta,
+    parentToolCallId,
+  );
+  if (explorationEvent) {
+    return explorationEvent;
   }
 
   if (decoded.type === "item/started" || decoded.type === "item/completed") {

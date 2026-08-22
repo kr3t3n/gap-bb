@@ -8,11 +8,15 @@
  * settlement, stream accumulation, usage accumulation, progress throttling —
  * is the runtime delta assembler's job. This module owns the claude dialect:
  *
- * - schema narrowing and tool classification (Bash → command, Edit/Write →
- *   fileChange, WebSearch/WebFetch → web items, else tool);
- * - the started-tool shape cache (tool results arrive inside USER messages
+ * - schema narrowing and tool classification (`tool-classification.ts`:
+ *   Bash → command, Read → fileRead, Grep/Glob → search, Edit/Write →
+ *   fileChange, Agent/Task → delegation, WebSearch/WebFetch → web items,
+ *   else tool) with a presentation on every item.open/close
+ *   (`presentation.ts`), and the plan-steps snapshots TodoWrite and the
+ *   task-list tools produce (`plan-fold.ts`);
+ * - the started-tool cache (tool results arrive inside USER messages
  *   without the call's args, and `item.close` must carry the full terminal
- *   shape);
+ *   shape and re-state the presentation);
  * - the background-task machine (workflow fold, generations, opaque tasks,
  *   the completion-blocking rule that WITHHOLDS `turn.boundary` while
  *   blocking tasks are open, and the interruption drain);
@@ -37,10 +41,10 @@ import {
   type ProviderRateLimitStatus,
   type ProviderRuntimeEvent,
   type ThreadDelta,
-  claudeTaskToolNameSchema,
-  claudeTaskToolOutputSchema,
-  type ClaudeTaskToolOutput,
-  bashArgsSchema,
+  type ThreadEventPlanStep,
+  type ThreadEventTokenUsageBreakdown,
+  ZERO_TOKEN_USAGE,
+  addTokenUsage,
   errorEnvelopeSchema,
   extractResultText,
   jsonRpcEnvelopeSchema,
@@ -48,7 +52,6 @@ import {
   sdkMessageEnvelopeSchema,
   threadIdentityEnvelopeSchema,
   toOptionalRecord,
-  toOptionalString,
   type ClientTurnRequestId,
   type ProviderRawEvent,
 } from "@get-bb/plugin-sdk/provider-bridge";
@@ -57,7 +60,6 @@ import {
   claudeAssistantMessageSchema,
   claudeCompactBoundarySystemMessageSchema,
   claudeConversationResetMessageSchema,
-  claudeFileEditArgsSchema,
   claudeModelFallbackSystemMessageSchema,
   claudeModelRefusalNoFallbackSystemMessageSchema,
   claudePermissionDeniedSystemMessageSchema,
@@ -68,18 +70,27 @@ import {
   claudeStreamEventMessageSchema,
   claudeSystemMessageSchema,
   claudeUserMessageSchema,
-  claudeWebFetchArgsSchema,
-  claudeWebSearchArgsSchema,
   type ClaudeApiRetryMessage,
   type ClaudeAssistantMessage,
-  type ClaudeFileEditArgs,
   type ClaudeRateLimitEvent,
   type ClaudeResultMessage,
-  type ClaudeToolUseResult,
-  type ClaudeWebFetchArgs,
-  type ClaudeWebSearchArgs,
 } from "./schemas.js";
 import { buildClaudeProviderErrorInfo } from "./error-info.js";
+import {
+  COMPACTION_PRESENTATION,
+  planStepsPresentation,
+} from "./presentation.js";
+import {
+  foldClaudeTaskToolResult,
+  type ClaudeTaskPlanState,
+} from "./plan-fold.js";
+import {
+  classifyClaudeToolResultFallback,
+  classifyClaudeToolUse,
+  stripClaudeAgentOutputMetadata,
+  type ClaudeClassifiedTool,
+  type ClaudeInjectedTool,
+} from "./tool-classification.js";
 import {
   hasCompletionBlockingClaudeTasks,
   buildInterruptedClaudeTaskDeltas,
@@ -113,172 +124,80 @@ export interface ClaudeDeltaTranslationContext {
 
 const ASSISTANT_STREAM_KEY = "assistant";
 
-// ---------------------------------------------------------------------------
-// Claude tool classification (dialect → delta item shapes)
-// ---------------------------------------------------------------------------
-
-interface ClaudeBashCommand {
-  command: string;
-  cwd: string | null;
+/**
+ * One anonymous stream per thinking block, keyed by its content index so the
+ * streamed deltas and the block's final text settle the same reasoning item.
+ * Prefixed so a thinking stream can never share a key with the assistant
+ * stream or another channel-keyed family.
+ */
+function thinkingStreamChannel(contentIndex: number): string {
+  return `thinking-${contentIndex}`;
 }
 
-export function parseClaudeBashCommand(
-  input: unknown,
-): ClaudeBashCommand | null {
-  const parsed = bashArgsSchema.safeParse(input);
-  if (!parsed.success) {
-    return null;
-  }
-  const command = toOptionalString(parsed.data.command);
-  if (!command) {
-    return null;
-  }
-  return {
-    command,
-    cwd: toOptionalString(parsed.data.cwd) ?? null,
-  };
-}
+/** Provider-anonymous key for the plan-steps snapshots of a thread. */
+const PLAN_STEPS_CHANNEL = "planSteps";
 
-export function getClaudeFileEditPath(args: ClaudeFileEditArgs): string | null {
-  return args.file_path ?? args.path ?? null;
-}
-
-function normalizeClaudeWebSearchArgs(
-  args: ClaudeWebSearchArgs,
-): string[] | null {
-  const query = toOptionalString(args.query);
-  if (!query) {
-    return null;
-  }
-  return [query];
-}
-
-function normalizeClaudeWebFetchArgs(
-  args: ClaudeWebFetchArgs,
-): { url: string; prompt: string | null } | null {
-  const url = toOptionalString(args.url);
-  if (!url) {
-    return null;
-  }
-  return {
-    url,
-    prompt: toOptionalString(args.prompt) ?? null,
-  };
-}
-
-const CLAUDE_COMMAND_TOOL_NAMES = new Set(["Bash"]);
-const CLAUDE_FILE_CHANGE_TOOL_NAMES = new Set(["Edit", "Write"]);
-
-function genericToolShape(toolName: string, args: unknown): DeltaItemShape {
-  const toolArguments = toOptionalRecord(args);
-  return {
-    type: "tool",
-    tool: toolName,
-    ...(toolArguments ? { args: toolArguments } : {}),
-  };
-}
-
-function classifyClaudeToolUse(
-  toolName: string,
-  args: unknown,
+/**
+ * The full terminal shape for a tool result. A delegation's result is the
+ * child's summary (without Claude's internal metadata lines); every other
+ * shape closes as it opened and the result rides the generic close fields.
+ */
+function terminalToolShape(
+  shape: DeltaItemShape,
+  outputText: string | undefined,
 ): DeltaItemShape {
-  if (CLAUDE_COMMAND_TOOL_NAMES.has(toolName)) {
-    const command = parseClaudeBashCommand(args);
-    return command
-      ? { type: "command", command: command.command, cwd: command.cwd ?? "" }
-      : genericToolShape(toolName, args);
+  if (shape.type === "delegation" && outputText !== undefined) {
+    const summary = stripClaudeAgentOutputMetadata(outputText);
+    return summary.length > 0 ? { ...shape, summary } : shape;
   }
-
-  if (CLAUDE_FILE_CHANGE_TOOL_NAMES.has(toolName)) {
-    const parsed = claudeFileEditArgsSchema.safeParse(args);
-    if (!parsed.success) {
-      return genericToolShape(toolName, args);
-    }
-    const path = getClaudeFileEditPath(parsed.data);
-    if (!path) {
-      return { type: "tool", tool: toolName, args: parsed.data };
-    }
-    const newText = parsed.data.new_string ?? parsed.data.content;
-    return {
-      type: "fileChange",
-      changes: [
-        {
-          path,
-          kind: parsed.data.old_string === undefined ? "add" : "update",
-          ...(parsed.data.old_string === undefined
-            ? {}
-            : { oldText: parsed.data.old_string }),
-          ...(newText === undefined ? {} : { newText }),
-        },
-      ],
-    };
-  }
-
-  if (toolName === "WebSearch") {
-    const parsed = claudeWebSearchArgsSchema.safeParse(args);
-    const queries = parsed.success
-      ? normalizeClaudeWebSearchArgs(parsed.data)
-      : null;
-    return queries
-      ? { type: "webSearch", queries }
-      : genericToolShape(toolName, args);
-  }
-  if (toolName === "WebFetch") {
-    const parsed = claudeWebFetchArgsSchema.safeParse(args);
-    const normalized = parsed.success
-      ? normalizeClaudeWebFetchArgs(parsed.data)
-      : null;
-    return normalized
-      ? {
-          type: "webFetch",
-          url: normalized.url,
-          prompt: normalized.prompt,
-          pattern: null,
-        }
-      : genericToolShape(toolName, args);
-  }
-
-  return genericToolShape(toolName, args);
+  return shape;
 }
 
-/** Fallback classification for close-without-open (the old kit fallback). */
-function classifyClaudeToolResultFallback(
-  toolName: string | undefined,
-): DeltaItemShape {
-  if (toolName !== undefined && CLAUDE_COMMAND_TOOL_NAMES.has(toolName)) {
-    return { type: "command", command: "", cwd: "" };
-  }
-  if (toolName !== undefined && CLAUDE_FILE_CHANGE_TOOL_NAMES.has(toolName)) {
-    return { type: "fileChange", changes: [] };
-  }
-  return { type: "tool", tool: toolName ?? "unknown" };
-}
-
-function parseClaudeTaskToolOutputValue(
-  value: unknown,
-): ClaudeTaskToolOutput | null {
-  const parsed = claudeTaskToolOutputSchema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  if (typeof value !== "string") return null;
-  try {
-    const json: unknown = JSON.parse(value);
-    const parsedJson = claudeTaskToolOutputSchema.safeParse(json);
-    return parsedJson.success ? parsedJson.data : null;
-  } catch {
-    return null;
+/**
+ * The generic close fields per shape: a command's exit code and aggregated
+ * output; the result text for tools, file changes and web items. A file
+ * read, a search and a delegation carry no output on the canonical item (the
+ * file contents, match list and child transcript are not row data).
+ */
+function terminalCloseFields(
+  shape: DeltaItemShape,
+  outputText: string | undefined,
+  isError: boolean,
+): Pick<
+  Extract<ThreadDelta, { kind: "item.close" }>,
+  "exitCode" | "aggregatedOutput" | "resultText"
+> {
+  switch (shape.type) {
+    case "command":
+      return {
+        exitCode: isError ? 1 : 0,
+        ...(outputText === undefined ? {} : { aggregatedOutput: outputText }),
+      };
+    case "fileRead":
+    case "search":
+    case "delegation":
+      return {};
+    default:
+      return outputText === undefined ? {} : { resultText: outputText };
   }
 }
 
-function parseClaudeTaskToolOutput(args: {
-  content: unknown;
-  outputText: string | undefined;
-  toolUseResult: ClaudeToolUseResult | null;
-}): ClaudeTaskToolOutput | null {
-  return (
-    parseClaudeTaskToolOutputValue(args.content) ??
-    parseClaudeTaskToolOutputValue(args.toolUseResult) ??
-    parseClaudeTaskToolOutputValue(args.outputText)
-  );
+/**
+ * A settled plan-steps snapshot (TodoWrite's list, or the folded task list):
+ * a channel-keyed close mints a fresh item per snapshot and the latest
+ * supersedes the rest — the same shape codex's update_plan produces.
+ */
+function planStepsSnapshotDelta(
+  steps: ThreadEventPlanStep[],
+  parentRefField: { parentRef?: string },
+): ThreadDelta {
+  return {
+    kind: "item.close",
+    key: { channel: PLAN_STEPS_CHANNEL, ...parentRefField },
+    status: "completed",
+    item: { type: "planSteps", steps },
+    presentation: planStepsPresentation(steps),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +459,12 @@ interface ClaudeTurnMirror {
 
 interface ClaudeThreadDialectState {
   mirror: ClaudeTurnMirror;
+  /**
+   * Running session token total for the `usage` delta: the SDK reports per
+   * result (per turn), and one translator lives per session, so this resets
+   * exactly where the bridge sends `session.reset`.
+   */
+  cumulativeTokens: ThreadEventTokenUsageBreakdown;
   latestRequestContextTokens: number | undefined;
   latestProviderCheckpointId: string | undefined;
   lastModelFallback:
@@ -561,19 +486,27 @@ interface ClaudeThreadDialectState {
    */
   openCompaction: { segment: number } | undefined;
   /**
-   * Started-tool shapes per call id: user-message tool results omit the
-   * call's args, and `item.close` carries the full terminal shape, so the
-   * shape classified at the tool_use is remembered until its result (and
-   * dropped when the turn settles, like the old per-turn tool cache).
+   * Started tools per call id: user-message tool results omit the call's
+   * args, and `item.close` carries the full terminal shape and re-states the
+   * presentation, so the classification made at the tool_use is remembered
+   * until its result (and dropped when the turn settles, like the old
+   * per-turn tool cache).
    */
-  startedToolShapes: Map<string, DeltaItemShape>;
+  startedTools: Map<string, ClaudeClassifiedTool>;
   /** Thread-lifetime background-task machine; outlives turns by design. */
   tasksById: ClaudeTaskMap;
+  /**
+   * Thread-lifetime task list the TaskCreate/TaskUpdate/TaskList/TaskGet
+   * calls fold into; each successful call emits the list as a planSteps
+   * snapshot.
+   */
+  taskPlan: ClaudeTaskPlanState;
 }
 
 function createThreadState(): ClaudeThreadDialectState {
   return {
     mirror: { turnOpen: false, pendingInputs: 0, segment: 0 },
+    cumulativeTokens: ZERO_TOKEN_USAGE,
     latestRequestContextTokens: undefined,
     latestProviderCheckpointId: undefined,
     lastModelFallback: undefined,
@@ -581,8 +514,9 @@ function createThreadState(): ClaudeThreadDialectState {
     selectedModelContextWindow: null,
     suppressUnacceptedTurnStart: false,
     openCompaction: undefined,
-    startedToolShapes: new Map(),
+    startedTools: new Map(),
     tasksById: new Map(),
+    taskPlan: new Map(),
   };
 }
 
@@ -592,6 +526,17 @@ function createThreadState(): ClaudeThreadDialectState {
 
 export function createClaudeDeltaTranslator() {
   const statesByThreadId = new Map<string, ClaudeThreadDialectState>();
+  /**
+   * The bb-injected tools of the session, by bare name. A call to
+   * `mcp__bb-bridge__<name>` is a bb tool (`server: "bb"`) and reads the way
+   * its definition says. One translator lives per session, so the set is
+   * session-wide.
+   */
+  let injectedToolsByName = new Map<string, ClaudeInjectedTool>();
+
+  function configureInjectedTools(tools: readonly ClaudeInjectedTool[]): void {
+    injectedToolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+  }
 
   function stateFor(context: ClaudeDeltaTranslationContext | undefined) {
     const key = context?.threadId ?? "";
@@ -618,14 +563,14 @@ export function createClaudeDeltaTranslator() {
     state.latestRequestContextTokens = undefined;
     state.latestProviderCheckpointId = undefined;
     state.armedHardRateLimitRejection = undefined;
-    state.startedToolShapes.clear();
+    state.startedTools.clear();
   }
 
   /** The old finishTurn/onTurnFinish: turn-scoped dialect memory dies here. */
   function mirrorCloseTurn(state: ClaudeThreadDialectState): void {
     state.mirror.turnOpen = false;
     state.armedHardRateLimitRejection = undefined;
-    state.startedToolShapes.clear();
+    state.startedTools.clear();
   }
 
   /**
@@ -814,6 +759,7 @@ export function createClaudeDeltaTranslator() {
           kind: "item.open",
           key: { channel: "compaction" },
           item: { type: "compaction" },
+          presentation: COMPACTION_PRESENTATION,
         },
       ]);
       state.openCompaction = { segment: state.mirror.segment };
@@ -836,6 +782,7 @@ export function createClaudeDeltaTranslator() {
             key: { channel: "compaction" },
             status: "completed",
             item: { type: "compaction" },
+            presentation: COMPACTION_PRESENTATION,
           },
         ];
       }
@@ -1040,33 +987,47 @@ export function createClaudeDeltaTranslator() {
       // Provider-final reasoning text: settles the streamed reasoning item
       // under the (parentRef, contentIndex) stream key, or mints one fresh.
       deltas.push({
-        kind: "message.close",
-        channel: "reasoning",
-        streamKey: String(thinkingBlock.contentIndex),
+        kind: "item.textClose",
+        key: {
+          channel: thinkingStreamChannel(thinkingBlock.contentIndex),
+          ...parentRefField,
+        },
+        channel: "reasoningText",
         text: thinkingBlock.text,
-        ...parentRefField,
       });
     }
 
     const text = extractAssistantText(message);
     if (text) {
       deltas.push({
-        kind: "message.close",
-        channel: "assistant",
-        streamKey: ASSISTANT_STREAM_KEY,
+        kind: "item.textClose",
+        key: { channel: ASSISTANT_STREAM_KEY, ...parentRefField },
+        channel: "agentMessage",
         text,
-        ...parentRefField,
       });
     }
 
     for (const toolUse of extractToolUses(message)) {
-      const shape = classifyClaudeToolUse(toolUse.name, toolUse.input);
-      state.startedToolShapes.set(toolUse.id, shape);
+      const classified = classifyClaudeToolUse({
+        toolName: toolUse.name,
+        toolUseId: toolUse.id,
+        input: toolUse.input,
+        injectedTools: injectedToolsByName,
+      });
+      state.startedTools.set(toolUse.id, classified);
       deltas.push({
         kind: "item.open",
         key: { providerItemId: toolUse.id, ...parentRefField },
-        item: shape,
+        item: classified.shape,
+        presentation: classified.presentation,
       });
+      if (classified.planSteps !== undefined) {
+        // TodoWrite carries the whole plan in its arguments: the snapshot
+        // settles beside the (collapsed) call row as soon as the call opens.
+        deltas.push(
+          planStepsSnapshotDelta(classified.planSteps, parentRefField),
+        );
+      }
     }
     return deltas;
   }
@@ -1094,11 +1055,13 @@ export function createClaudeDeltaTranslator() {
     if (reasoningDelta) {
       deltas.push({ kind: "turn.open" });
       deltas.push({
-        kind: "message.delta",
-        channel: "reasoning",
-        streamKey: String(reasoningDelta.contentIndex),
+        kind: "item.textDelta",
+        key: {
+          channel: thinkingStreamChannel(reasoningDelta.contentIndex),
+          ...parentRefField,
+        },
+        channel: "reasoningText",
         text: reasoningDelta.delta,
-        ...parentRefField,
       });
     }
 
@@ -1106,11 +1069,10 @@ export function createClaudeDeltaTranslator() {
     if (textDelta) {
       deltas.push({ kind: "turn.open" });
       deltas.push({
-        kind: "message.delta",
-        channel: "assistant",
-        streamKey: ASSISTANT_STREAM_KEY,
+        kind: "item.textDelta",
+        key: { channel: ASSISTANT_STREAM_KEY, ...parentRefField },
+        channel: "agentMessage",
         text: textDelta.delta,
-        ...parentRefField,
       });
     }
 
@@ -1139,10 +1101,20 @@ export function createClaudeDeltaTranslator() {
     const parentRefField = parentToolCallId
       ? { parentRef: parentToolCallId }
       : {};
+    // The SDK puts the tool's structured result on the user-message envelope
+    // (`tool_use_result`), one message per result. The task-list tools are
+    // the only ones whose structured form the bridge reads — for the plan
+    // fold: the created task's id, a patch's success flag, a listing's
+    // tasks. The item itself carries the text result like any tool.
+    const envelopeToolUseResult =
+      toolResults.length === 1
+        ? (toOptionalRecord(parsedMessage.data)?.tool_use_result ?? undefined)
+        : undefined;
     const deltas: ThreadDelta[] = [];
     for (const result of toolResults) {
-      const startedShape = state.startedToolShapes.get(result.toolUseId);
-      state.startedToolShapes.delete(result.toolUseId);
+      const started = state.startedTools.get(result.toolUseId);
+      state.startedTools.delete(result.toolUseId);
+      const startedShape = started?.shape;
       const isCommandResult =
         result.toolName === "Bash" || startedShape?.type === "command";
       const outputText = isCommandResult
@@ -1153,40 +1125,29 @@ export function createClaudeDeltaTranslator() {
         : extractResultText(result.content);
       const resultToolName =
         startedShape?.type === "tool" ? startedShape.tool : result.toolName;
-      const taskToolResult =
-        resultToolName !== undefined &&
-        claudeTaskToolNameSchema.safeParse(resultToolName).success
-          ? parseClaudeTaskToolOutput({
-              content: result.content,
-              outputText,
-              toolUseResult: result.toolUseResult,
-            })
-          : null;
-      const baseShape =
-        startedShape ?? classifyClaudeToolResultFallback(result.toolName);
-      // Task-tool results parse into structured output riding the terminal
-      // tool shape; plain results ride the generic resultText close field.
-      const terminalShape: DeltaItemShape =
-        baseShape.type === "tool" && taskToolResult !== null
-          ? { ...baseShape, result: taskToolResult }
-          : baseShape;
+      const base = started ?? classifyClaudeToolResultFallback(result.toolName);
       const status = result.isError ? "failed" : "completed";
       deltas.push({
         kind: "item.close",
         key: { providerItemId: result.toolUseId, ...parentRefField },
         status,
-        ...(terminalShape.type === "command"
-          ? {
-              exitCode: result.isError ? 1 : 0,
-              ...(outputText === undefined
-                ? {}
-                : { aggregatedOutput: outputText }),
-            }
-          : outputText === undefined
-            ? {}
-            : { resultText: outputText }),
-        item: terminalShape,
+        ...terminalCloseFields(base.shape, outputText, result.isError),
+        item: terminalToolShape(base.shape, outputText),
+        presentation: base.presentation,
       });
+      // A settled task-list call re-emits the folded list as a plan snapshot.
+      if (resultToolName !== undefined) {
+        const planSteps = foldClaudeTaskToolResult({
+          state: state.taskPlan,
+          toolName: resultToolName,
+          input: startedShape?.type === "tool" ? startedShape.args : undefined,
+          output: envelopeToolUseResult ?? result.toolUseResult ?? outputText,
+          failed: result.isError,
+        });
+        if (planSteps !== null) {
+          deltas.push(planStepsSnapshotDelta(planSteps, parentRefField));
+        }
+      }
     }
     return deltas;
   }
@@ -1241,9 +1202,14 @@ export function createClaudeDeltaTranslator() {
     }
     const tokenUsage = extractClaudeResultTokenUsage(message);
     if (tokenUsage !== undefined) {
+      state.cumulativeTokens = addTokenUsage(
+        state.cumulativeTokens,
+        tokenUsage.last,
+      );
       deltas.push({
-        kind: "usage.turn",
-        tokens: tokenUsage.last,
+        kind: "usage",
+        total: state.cumulativeTokens,
+        last: tokenUsage.last,
         modelContextWindow: tokenUsage.modelContextWindow,
       });
     }
@@ -1503,11 +1469,7 @@ export function createClaudeDeltaTranslator() {
     const state = stateFor({ threadId });
     const deltas: ThreadDelta[] = [];
     if (state.mirror.turnOpen) {
-      deltas.push(
-        ...withMirror(state, [
-          { kind: "session.ended" },
-        ]),
-      );
+      deltas.push(...withMirror(state, [{ kind: "session.ended" }]));
     }
     deltas.push(
       ...buildInterruptedClaudeTaskDeltas({ tasks: state.tasksById }),
@@ -1537,6 +1499,7 @@ export function createClaudeDeltaTranslator() {
   return {
     acceptInput,
     buildSessionSettlementDeltas,
+    configureInjectedTools,
     hasOpenTurn,
     setClaudeModelContextWindowHint,
     translate,

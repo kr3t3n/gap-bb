@@ -8,7 +8,7 @@ to hosts, and the official conformance kit.
 
 ## What it demonstrates
 
-- **`bb.agents.experimental_registerProvider`** (`server.ts`) — the provider
+- **`bb.providers.register`** (`server.ts`) — the provider
   declaration: stable id, picker display name, and pre-session capability
   facts (all `false` here; permission mode `full`, reasoning level `medium`).
   Metadata only: the implementation is the bridge below, and a declaration

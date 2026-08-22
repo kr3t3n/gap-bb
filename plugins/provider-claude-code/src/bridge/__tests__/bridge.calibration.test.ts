@@ -51,12 +51,13 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 import { handleLine } from "../bridge.js";
 import {
-  createBridgeJsonRpcTestHarness,
-  describeCalibrationEvents,
-  normalizeCalibrationEvents,
-} from "@bb/provider-bridge-protocol/testing";
-import { createBridgeDeltaEventCollector } from "@bb/agent-runtime/test/bridge-delta-assembly";
-import type { BridgeJsonRpcTestHarness } from "@bb/provider-bridge-protocol/testing";
+  experimental_createBridgeDeltaEventCollector as createBridgeDeltaEventCollector,
+  experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
+  experimental_describeCalibrationEvents as describeCalibrationEvents,
+  experimental_normalizeCalibrationEvents as normalizeCalibrationEvents,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type { BridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 const THREAD_ID = "thr_calibration_1";
 const TOOL_USE_ID = "toolu_01AbCdEfGhIjKlMnOpQrStUv";
 const APPROVAL_TOOL_USE_ID = "toolu_01ApprovalWxYz0123456789";

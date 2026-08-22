@@ -83,7 +83,7 @@ import {
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import {
   getSettingsMachineRoutePath,
-  getSettingsProviderRoutePath,
+  getSettingsRoutePath,
 } from "@/lib/route-paths";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import { sdk } from "@/lib/sdk";
@@ -1004,7 +1004,7 @@ interface MachineUpdatesRowsProps {
   queuedJobKeys: ReadonlySet<string>;
   failuresByJobKey?: ReadonlyMap<string, ProviderCliInstallFailure>;
   onStartInstall: (hostId: string, issue: ProviderCliActionableIssue) => void;
-  /** Opens that provider's own settings page — the row's real destination. */
+  /** Opens the Providers settings bucket — the row's real destination. */
   onOpenProvider: (providerId: string) => void;
 }
 
@@ -1463,7 +1463,7 @@ export function UpdatesSettingsSection({
     handleCheckForUpdates();
     // Deliberately runs once per mount; `handleCheckForUpdates` closes over the
     // host snapshot taken at that moment, which is what the check should use.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, [hostsSettled]);
 
   const appUpdateVisible =
@@ -1650,9 +1650,7 @@ export function UpdatesSettingsSection({
                 onStartInstall={(hostId, issue) =>
                   startInstall({ hostId, issue })
                 }
-                onOpenProvider={(providerId) =>
-                  navigate(getSettingsProviderRoutePath(providerId))
-                }
+                onOpenProvider={() => navigate(getSettingsRoutePath("providers"))}
               />
             </MachineUpdatesSection>
           );

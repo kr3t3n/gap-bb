@@ -1,15 +1,22 @@
 /**
  * The provider registry: the single server-side source of provider metadata.
  *
- * Plugin declarations (bb.agents.experimental_registerProvider) are the ONLY
- * source. The core catalog seed is gone, so a provider exists exactly while
- * some enabled plugin declares it — disabling a provider plugin removes its
- * provider rather than degrading it to a core entry.
+ * Plugin declarations (`bb.providers.register`) are the ONLY source. The
+ * core catalog seed is gone, so a provider exists exactly while some enabled
+ * plugin declares it — disabling a provider plugin removes its provider
+ * rather than degrading it to a core entry.
  *
  * The registry holds DECLARATIONS — static metadata a provider asserts about
  * itself (identity, branding, capabilities, composer actions). Availability
  * stays computed (host probes, plugin health), and session-behavior facts
  * stay in the bridge handshake; neither belongs here.
+ *
+ * Ids are flat: the first live registration of an id wins and a later one
+ * from another plugin is refused. No id is reserved ahead of time and no
+ * core table ranks providers — listing order is plugin install order (the
+ * bundled first-party plugins install first, in their bundled order) under
+ * the user's own `providerOrder` setting, and the default provider is the
+ * user's `defaultProviderId` setting or the first available entry.
  */
 import {
   ACP_TIER_CAPABILITIES,
@@ -17,12 +24,19 @@ import {
   isAcpProviderId,
 } from "./acp-provider-tier.js";
 import type {
+  AvailableModel,
+  ExtensionKind,
   JsonValue,
   PermissionMode,
   ProviderFork,
   ProviderInfo,
   ReasoningLevel,
 } from "@bb/domain";
+import { parseExtensionKind } from "@bb/domain";
+import type {
+  PluginProviderExtensionKindDeclaration,
+  PluginProviderOptionsContext,
+} from "@get-bb/plugin-sdk";
 
 /**
  * Backend-only provider facts, the server-side half of a declaration (the
@@ -30,11 +44,6 @@ import type {
  * package because only the registry and its policy accessors read it.
  */
 export interface ProviderServerCapabilities {
-  /**
-   * Whether sessions get the Workflows feature (dynamic multi-agent
-   * orchestration). The Workflow tool's own opt-in rules govern actual use.
-   */
-  supportsWorkflows: boolean;
   /**
    * The coarse, ordered per-provider reasoning ladder. Used as a fallback when
    * a precise per-model `supportedReasoningEfforts` set is unavailable.
@@ -53,71 +62,63 @@ export interface ProviderServerCapabilities {
   supportsManualCompaction: boolean;
 }
 
-/**
- * Listing order is product policy, so the server states it instead of
- * inheriting it from plugin load order (which is alphabetical by plugin id
- * and, worse, moves a provider to the end when it is disabled and re-enabled).
- * Ids named here lead, in this order; everything else follows by registration.
- * The first entry is also the product default provider.
- */
-export const PRODUCT_PROVIDER_ORDER: readonly string[] = [
-  "codex",
-  "claude-code",
-  "pi",
-  "acp-cursor",
-];
-
 type ProviderRegistrationSource = { kind: "plugin"; pluginId: string };
 
 /**
- * First-party provider ids, each reserved to the official plugin that owns it.
- *
- * These ids are not just names. `pi` is executed by the bridge inside the
- * daemon bundle no matter who declares it, so a third-party plugin claiming
- * that id would supply the metadata for somebody else's implementation; the
- * others are the ids threads, defaults, and product ordering are written
- * against. Reservation holds even while the owning plugin is disabled —
- * otherwise disabling Codex would open "codex" for anyone to claim, and
- * re-enabling it would fail.
+ * Where a registration sits in plugin install order. Bundled first-party
+ * plugins rank by their position in the bundled plugin list (they install
+ * first, at bootstrap); every other plugin ranks by the time it was
+ * installed. Ties keep registration sequence.
  */
-const RESERVED_PROVIDER_ID_OWNERS: Readonly<Record<string, string>> = {
-  codex: "provider-codex",
-  "claude-code": "provider-claude-code",
-  pi: "provider-pi",
-};
-
-/** The plugin that owns the whole `acp-*` tier, ids included. */
-const ACP_TIER_OWNER_PLUGIN_ID = "provider-acp";
+export interface ProviderInstallRank {
+  /** Position in the bundled plugin list, or null for a non-bundled plugin. */
+  bundledIndex: number | null;
+  /** Epoch ms the plugin row was installed. */
+  installedAt: number;
+}
 
 /**
- * Why this plugin may not claim this provider id, or null when it may. The
- * live-collision check is separate: this one answers for ids no plugin has
- * registered (yet, or right now).
+ * The payload validators a provider declared for its extension kinds, keyed
+ * by the kind's local name (the namespaced kind is `"<pluginId>/<name>"`,
+ * see `parseExtensionKind`). Server-only: the event ingest route validates
+ * every `extension` item and `extension.state` payload against these before
+ * persisting it, so clients never see a payload the plugin did not vouch
+ * for. Schemas are code, so they live here rather than on `ProviderInfo`.
  */
-export function reservedProviderIdProblem(args: {
-  pluginId: string;
-  providerId: string;
-}): string | null {
-  const owner = isAcpProviderId(args.providerId)
-    ? ACP_TIER_OWNER_PLUGIN_ID
-    : RESERVED_PROVIDER_ID_OWNERS[args.providerId];
-  if (owner === undefined || owner === args.pluginId) {
-    return null;
-  }
-  return `Provider "${args.providerId}" is reserved for the "${owner}" plugin${
-    isAcpProviderId(args.providerId)
-      ? ' (the "acp-" prefix names bb\'s ACP tier)'
-      : ""
-  }.`;
-}
+export type ProviderExtensionKindSchemas = Readonly<
+  Record<string, PluginProviderExtensionKindDeclaration>
+>;
 
 export interface ProviderRegistration {
   info: ProviderInfo;
   serverCapabilities: ProviderServerCapabilities;
   /** Opaque provider-owned statics forwarded to this registration's bridge. */
   bridgeOptions: Readonly<Record<string, JsonValue>>;
+  extensionKinds: ProviderExtensionKindSchemas;
   visibility: "always" | "installed";
   source: ProviderRegistrationSource;
+  /**
+   * Declared cold-cache fallback models (`experimental_models.fallback`), in
+   * the model-list wire shape. Offered only while no probe has completed or
+   * when one fails transiently; the live `model/list` result always wins.
+   */
+  fallbackModels: readonly AvailableModel[];
+  /**
+   * Daemon environment variable names the bridge may read
+   * (`experimental_env.passthrough`); the daemon forwards exactly these past
+   * its `BB_*` spawn sanitization. Empty when the provider declared none.
+   */
+  envPassthrough: readonly string[];
+  /**
+   * The plugin's per-command options hook, bound to this declaration and to
+   * the plugin's own settings (read at call time) and validated (bounded
+   * plain JSON). The result rides the command as `providerOptions`, opaque to
+   * core. Throws with the plugin named when the hook throws or returns
+   * non-JSON.
+   */
+  deriveProviderOptions: (
+    context: Omit<PluginProviderOptionsContext, "settings">,
+  ) => Readonly<Record<string, JsonValue>>;
   /**
    * Immutable byte snapshot of the declared provider icon, read from the
    * plugin root at registration time and served by the provider-logo route.
@@ -128,8 +129,17 @@ export interface ProviderRegistration {
 }
 
 export interface ProviderRegistryService {
-  /** Registered provider metadata in {@link PRODUCT_PROVIDER_ORDER}, then the rest by registration. */
+  /**
+   * Registered provider metadata: ids the user pinned in `providerOrder`
+   * lead in that order, then the rest by plugin install order.
+   */
   list(): ProviderRegistration[];
+  /**
+   * The id the user chose as default, or null when they chose none or the
+   * choice names a provider that is not registered — callers then fall back
+   * to the first available entry of {@link list}.
+   */
+  getUserDefaultProviderId(): string | null;
   get(providerId: string): ProviderRegistration | null;
   /**
    * Monotonic revision of the live registration set. Plugin lifecycle
@@ -164,22 +174,41 @@ export interface ProviderRegistryService {
    */
   supportsManualCompaction(providerId: string): boolean;
   /**
+   * The declared validators for one namespaced extension kind, found through
+   * the kind's plugin-id prefix (a plugin's providers share one namespace).
+   * Null when no live registration from that plugin declares the name — an
+   * undeclared kind is rejected at ingest exactly like a failing payload.
+   */
+  getExtensionKindSchemas(
+    kind: ExtensionKind,
+  ): PluginProviderExtensionKindDeclaration | null;
+  /**
    * Adds a plugin-registered provider. Rejects id collisions with any live
-   * registration — a plugin cannot shadow another plugin's provider — and
-   * first-party ids claimed by a plugin that does not own them
-   * ({@link reservedProviderIdProblem}). The
-   * disposer removes the registration (plugin reload/disable), which really
-   * does remove the provider: with no seed underneath, a disabled provider
-   * plugin leaves no entry behind.
+   * registration — the first registration wins and a plugin cannot shadow
+   * another plugin's provider. The disposer removes the registration (plugin
+   * reload/disable), which really does remove the provider: with no seed
+   * underneath, a disabled provider plugin leaves no entry behind.
    */
   register(
     registration: Omit<
       ProviderRegistration,
-      "bridgeOptions" | "source" | "visibility"
+      | "bridgeOptions"
+      | "extensionKinds"
+      | "source"
+      | "visibility"
+      | "fallbackModels"
+      | "envPassthrough"
+      | "deriveProviderOptions"
     > & {
       bridgeOptions?: ProviderRegistration["bridgeOptions"];
+      extensionKinds?: ProviderRegistration["extensionKinds"];
       pluginId: string;
       visibility?: ProviderRegistration["visibility"];
+      fallbackModels?: ProviderRegistration["fallbackModels"];
+      envPassthrough?: ProviderRegistration["envPassthrough"];
+      deriveProviderOptions?: ProviderRegistration["deriveProviderOptions"];
+      /** Omitted by tests that do not care about order: ranks last. */
+      installRank?: ProviderInstallRank;
     },
   ): { dispose(): void };
   /**
@@ -229,6 +258,15 @@ interface ProviderRegistryDeps {
     providerId: string,
   ) => { supportsManualCompaction: boolean } | null;
   /**
+   * The user's picker order and default provider (app settings), read on
+   * every listing so a settings change applies to the next request. Omitted
+   * by tests and pre-config construction: install order, no pinned default.
+   */
+  readUserProviderPreferences?: () => {
+    providerOrder: readonly string[];
+    defaultProviderId: string | null;
+  };
+  /**
    * Defaults to settled: only the real server defers, because only there do
    * registrations arrive asynchronously from plugin startup.
    */
@@ -239,8 +277,37 @@ export function createProviderRegistryService(
   deps: ProviderRegistryDeps = {},
 ): ProviderRegistryService {
   const pluginRegistrations = new Map<string, ProviderRegistration>();
+  const registrationRanks = new Map<
+    ProviderRegistration,
+    { installRank: ProviderInstallRank | null; sequence: number }
+  >();
   const providerRegistrationWaiters = new Map<string, Set<() => void>>();
   let registrationRevision = 0;
+  let registrationSequence = 0;
+
+  function compareInstallRank(
+    a: ProviderRegistration,
+    b: ProviderRegistration,
+  ): number {
+    const rankA = registrationRanks.get(a);
+    const rankB = registrationRanks.get(b);
+    const installA = rankA?.installRank ?? null;
+    const installB = rankB?.installRank ?? null;
+    if (installA !== null || installB !== null) {
+      if (installA === null) return 1;
+      if (installB === null) return -1;
+      const bundledA = installA.bundledIndex;
+      const bundledB = installB.bundledIndex;
+      if (bundledA !== null || bundledB !== null) {
+        if (bundledA === null) return 1;
+        if (bundledB === null) return -1;
+        if (bundledA !== bundledB) return bundledA - bundledB;
+      } else if (installA.installedAt !== installB.installedAt) {
+        return installA.installedAt - installB.installedAt;
+      }
+    }
+    return (rankA?.sequence ?? 0) - (rankB?.sequence ?? 0);
+  }
   let settle: (() => void) | null = null;
   const settled: Promise<void> =
     deps.deferRegistrationsSettled === true
@@ -253,8 +320,11 @@ export function createProviderRegistryService(
     return pluginRegistrations.get(providerId) ?? null;
   }
 
+  // Dynamic `acp-*` ids share one waiter key: any ACP registration releases
+  // them, since those per-agent ids are never registered individually.
+  const ACP_TIER_WAITER_KEY = "acp tier"; // not a valid provider id, so it never collides
   function registrationWaiterKey(providerId: string): string {
-    return isAcpProviderId(providerId) ? ACP_TIER_OWNER_PLUGIN_ID : providerId;
+    return isAcpProviderId(providerId) ? ACP_TIER_WAITER_KEY : providerId;
   }
 
   function hasProviderRegistration(providerId: string): boolean {
@@ -304,13 +374,28 @@ export function createProviderRegistryService(
 
   return {
     list() {
-      const entries = [...pluginRegistrations.values()];
-      const rank = (entry: ProviderRegistration): number => {
-        const index = PRODUCT_PROVIDER_ORDER.indexOf(entry.info.id);
-        return index === -1 ? PRODUCT_PROVIDER_ORDER.length : index;
+      const entries = [...pluginRegistrations.values()].sort(
+        compareInstallRank,
+      );
+      const userOrder = deps.readUserProviderPreferences?.().providerOrder ?? [];
+      if (userOrder.length === 0) {
+        return entries;
+      }
+      const pinned = (entry: ProviderRegistration): number => {
+        const index = userOrder.indexOf(entry.info.id);
+        return index === -1 ? userOrder.length : index;
       };
-      // Stable sort keeps registration order within the unranked tail.
-      return entries.sort((a, b) => rank(a) - rank(b));
+      // Stable sort keeps install order within the unpinned tail.
+      return entries.sort((a, b) => pinned(a) - pinned(b));
+    },
+
+    getUserDefaultProviderId() {
+      const preferred =
+        deps.readUserProviderPreferences?.().defaultProviderId ?? null;
+      if (preferred === null || !pluginRegistrations.has(preferred)) {
+        return null;
+      }
+      return preferred;
     },
 
     get(providerId) {
@@ -379,15 +464,22 @@ export function createProviderRegistryService(
       return false;
     },
 
+    getExtensionKindSchemas(kind) {
+      const { pluginId, name } = parseExtensionKind(kind);
+      for (const registration of pluginRegistrations.values()) {
+        if (registration.source.pluginId !== pluginId) {
+          continue;
+        }
+        const declared = registration.extensionKinds[name];
+        if (declared !== undefined) {
+          return declared;
+        }
+      }
+      return null;
+    },
+
     register(registration) {
       const providerId = registration.info.id;
-      const reserved = reservedProviderIdProblem({
-        pluginId: registration.pluginId,
-        providerId,
-      });
-      if (reserved !== null) {
-        throw new Error(reserved);
-      }
       if (pluginRegistrations.has(providerId)) {
         throw new Error(
           `Provider "${providerId}" is already registered; a plugin cannot shadow an existing provider.`,
@@ -397,17 +489,28 @@ export function createProviderRegistryService(
         info: registration.info,
         serverCapabilities: registration.serverCapabilities,
         bridgeOptions: registration.bridgeOptions ?? {},
+        extensionKinds: registration.extensionKinds ?? {},
         visibility: registration.visibility ?? "always",
         source: { kind: "plugin", pluginId: registration.pluginId },
+        fallbackModels: registration.fallbackModels ?? [],
+        envPassthrough: registration.envPassthrough ?? [],
+        deriveProviderOptions:
+          registration.deriveProviderOptions ?? (() => ({})),
         ...(registration.icon === undefined ? {} : { icon: registration.icon }),
       };
       pluginRegistrations.set(providerId, entry);
+      registrationSequence += 1;
+      registrationRanks.set(entry, {
+        installRank: registration.installRank ?? null,
+        sequence: registrationSequence,
+      });
       registrationRevision += 1;
       releaseProviderRegistrationWaiters(providerId);
       return {
         dispose() {
           if (pluginRegistrations.get(providerId) === entry) {
             pluginRegistrations.delete(providerId);
+            registrationRanks.delete(entry);
             registrationRevision += 1;
           }
         },

@@ -2,8 +2,9 @@
 // a workspace HTML file through the same path-shaped, sandboxed iframe route
 // as bb's sidebar HTML preview. Scripts, relative assets, and normal web
 // resources work inside an opaque origin that cannot access the host page.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Icon } from "@bb/shared-ui/icon";
+import { Skeleton } from "@bb/shared-ui/skeleton";
 import {
   definePluginApp,
   useRpc,
@@ -40,6 +41,32 @@ function parsePreviewHeight(value: string | undefined): number | null {
     height <= MAX_HEIGHT_PX
     ? height
     : null;
+}
+
+// Shared card chrome for the loading and ready states. Both states must render
+// identical geometry: the thread timeline is bottom-anchored, so any height
+// change when the iframe replaces the loader scrolls earlier content away.
+function PreviewCard({
+  file,
+  action,
+  children,
+}: {
+  file: string;
+  action: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-border bg-background">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="shrink-0 font-semibold">inline-vis</span>
+          <span className="truncate opacity-70">{file}</span>
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 function InlineVisDirective({
@@ -130,12 +157,24 @@ function InlineVisDirective({
 
   if (state.status === "loading") {
     return (
-      <div
-        className="my-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
-        aria-busy="true"
+      <PreviewCard
+        file={state.file}
+        action={
+          openWorkspaceFile === null ? null : (
+            <span aria-hidden className="size-5 shrink-0" />
+          )
+        }
       >
-        Loading visualization {state.file}…
-      </div>
+        <div
+          role="status"
+          aria-busy="true"
+          aria-label={`Loading visualization ${state.file}`}
+          style={{ height: previewHeight ?? DEFAULT_HEIGHT_PX }}
+          className="w-full p-3"
+        >
+          <Skeleton className="size-full" />
+        </div>
+      </PreviewCard>
     );
   }
 
@@ -154,13 +193,10 @@ function InlineVisDirective({
   const previewUrl = buildWorktreePreviewUrl(message.threadId, state.file);
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-border bg-background">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="shrink-0 font-semibold">inline-vis</span>
-          <span className="truncate opacity-70">{state.file}</span>
-        </div>
-        {openWorkspaceFile === null ? null : (
+    <PreviewCard
+      file={state.file}
+      action={
+        openWorkspaceFile === null ? null : (
           <button
             type="button"
             aria-label={`Open ${state.file} in sidebar`}
@@ -172,8 +208,9 @@ function InlineVisDirective({
           >
             <Icon name="ExternalLink" aria-hidden className="size-3" />
           </button>
-        )}
-      </div>
+        )
+      }
+    >
       <iframe
         title={`inline-vis: ${state.file}`}
         src={previewUrl}
@@ -183,7 +220,7 @@ function InlineVisDirective({
         style={{ height: previewHeight ?? DEFAULT_HEIGHT_PX }}
         className="block w-full border-0 bg-background"
       />
-    </div>
+    </PreviewCard>
   );
 }
 

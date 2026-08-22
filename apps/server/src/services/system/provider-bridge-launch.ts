@@ -52,6 +52,10 @@ export function resolveBridgeLaunchForProviderId(
     pluginId,
     source,
     providerOptions: { ...registration.bridgeOptions },
+    // Declared daemon env the bridge may read, forwarded past the daemon's
+    // `BB_*` spawn sanitization. The dynamic ACP tier borrows the ACP
+    // plugin's declaration along with its artifact.
+    envPassthrough: [...registration.envPassthrough],
     // The daemon has no registry: transport the validated declaration's
     // execution capabilities so its adapter accepts the same permission
     // modes and service tier the server already offered to clients. The wire

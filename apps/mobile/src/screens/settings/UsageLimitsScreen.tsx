@@ -13,12 +13,13 @@ import {
   formatUsageReset,
   usageBarTone,
   usageHeading,
+  usageProviderConfigs,
   usageWindowValue,
   useSystemUsageLimits,
   visibleUsageProviders,
   type UsageProviderConfig,
 } from "@/data/settings";
-import { useSystemConfig } from "@/data/system";
+import { useSystemConfig, useSystemProviders } from "@/data/system";
 import { useTheme } from "@/theme";
 import {
   EmptyStatePanel,
@@ -113,7 +114,7 @@ function ProviderUsageBlock({
   const heading = usageHeading(usage);
   const body = describeUsageBody({ config, usage, isLoading, isError });
   return (
-    <View className="gap-3 px-4 py-3" testID={`usage-${config.key}`}>
+    <View className="gap-3 px-4 py-3" testID={`usage-${config.providerId}`}>
       <View className="flex-row items-start justify-between gap-2">
         <View className="min-w-0 flex-1">
           <Text variant="heading">{config.name}</Text>
@@ -163,8 +164,15 @@ function ConnectedUsageLimitsScreen() {
   const pickerSheet = useSheet();
   const maxHeight = usePickerSheetMaxHeight();
   const now = useNow();
+  const providersQuery = useSystemProviders({
+    ...(selectedHost === null ? {} : { hostId: selectedHost.id }),
+    enabled: configQuery.data !== undefined && hostReady,
+  });
   const usage: Partial<ProviderUsageResponse> = usageQuery.data ?? {};
-  const providers = visibleUsageProviders(usage);
+  const providers = visibleUsageProviders(
+    usageProviderConfigs(providersQuery.data ?? []),
+    usage,
+  );
   const loaded =
     hostsQuery.data !== undefined && configQuery.data !== undefined;
 
@@ -231,11 +239,11 @@ function ConnectedUsageLimitsScreen() {
           </View>
         ) : (
           providers.map((config, index) => (
-            <View key={config.key}>
+            <View key={config.providerId}>
               {index > 0 ? <Separator /> : null}
               <ProviderUsageBlock
                 config={config}
-                usage={usage[config.key]}
+                usage={usage[config.providerId]}
                 isLoading={usageQuery.isLoading}
                 isError={usageQuery.isError}
                 now={now}

@@ -40,41 +40,22 @@ interface ProviderConfig {
   expiredHint: string;
 }
 
-const FIRST_PARTY_PROVIDER_CONFIGS: Readonly<
-  Partial<Record<string, Omit<ProviderConfig, "providerId">>>
-> = {
-  codex: {
-    name: "Codex",
-    signInHint: "Run `codex` to sign in and see your usage.",
-    expiredHint: "Your Codex session expired. Run `codex`, then reload usage.",
-  },
-  "claude-code": {
-    name: "Claude Code",
-    signInHint: "Run `claude` to sign in and see your usage.",
-    expiredHint:
-      "Your Claude session expired. Run `claude`, then reload usage.",
-  },
-  "acp-cursor": {
-    name: "Cursor",
-    signInHint: "Run `cursor-agent login` to sign in and see your usage.",
-    expiredHint:
-      "Your Cursor session expired. Run `cursor-agent login`, then reload usage.",
-  },
-};
-
+/**
+ * Usage copy comes from the provider's declared `strings`; a provider that
+ * declares none (a dynamic ACP agent) gets generic copy built from its name.
+ */
 function providerConfig(
   providerId: string,
-  displayName: string | undefined,
+  info: Pick<ProviderInfo, "displayName" | "strings"> | undefined,
 ): ProviderConfig {
-  const firstParty = FIRST_PARTY_PROVIDER_CONFIGS[providerId];
-  const name = displayName ?? firstParty?.name ?? providerId;
+  const name = info?.displayName ?? providerId;
   return {
     providerId,
     name,
     signInHint:
-      firstParty?.signInHint ?? `Sign in to ${name}, then reload usage.`,
+      info?.strings?.signInHint ?? `Sign in to ${name}, then reload usage.`,
     expiredHint:
-      firstParty?.expiredHint ??
+      info?.strings?.expiredHint ??
       `Your ${name} session expired. Sign in again, then reload usage.`,
   };
 }
@@ -398,7 +379,7 @@ export function UsageLimitsSettingsSectionContent({
     ),
   ];
   const providerConfigs = orderedProviderIds.map((providerId) =>
-    providerConfig(providerId, providerById.get(providerId)?.displayName),
+    providerConfig(providerId, providerById.get(providerId)),
   );
   const emptyMessage =
     isLoading || isProviderListLoading

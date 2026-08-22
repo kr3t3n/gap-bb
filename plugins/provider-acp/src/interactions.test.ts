@@ -11,8 +11,9 @@ const allowDenyOptions = [
 
 // Historical fix 79f591bea: an ACP `session/request_permission` may carry an
 // arbitrarily sparse toolCall, but the canonical payload must always end up
-// with a grantable command-approval subject — never an empty payload the user
-// cannot act on. The fallback chain is command → title → kind → fixed text.
+// with a grantable approval subject — never an empty payload the user cannot
+// act on. A command asks as `command`; everything that is neither a command
+// nor a file change asks as `tool_use` with the timeline row's presentation.
 describe("buildAcpPermissionInteractionPayload", () => {
   it("uses the tool call command when present", () => {
     const payload = buildAcpPermissionInteractionPayload({
@@ -36,25 +37,72 @@ describe("buildAcpPermissionInteractionPayload", () => {
     });
   });
 
-  it("falls back to the title when there is no command", () => {
+  it("asks as tool_use with the kind's presentation and the title as the headline", () => {
     const payload = buildAcpPermissionInteractionPayload({
       toolCall: { toolCallId: "call-2", title: "Fetch docs", kind: "fetch" },
       options: allowDenyOptions,
     });
 
     expect(payload).toMatchObject({
-      subject: { kind: "command", command: "Fetch docs" },
+      subject: {
+        kind: "tool_use",
+        itemId: "call-2",
+        tool: "fetch",
+        presentation: {
+          label: { pending: "Fetching", completed: "Fetched" },
+          icon: { glyph: "Globe" },
+          title: "Fetch docs",
+        },
+      },
     });
   });
 
-  it("falls back to the kind when there is no command or title", () => {
+  it("names the core kind when the call maps to one", () => {
     const payload = buildAcpPermissionInteractionPayload({
-      toolCall: { toolCallId: "call-3", kind: "fetch" },
+      toolCall: {
+        toolCallId: "call-3",
+        title: "Read File",
+        kind: "read",
+        locations: [{ path: "/etc/hosts" }],
+      },
       options: allowDenyOptions,
     });
 
     expect(payload).toMatchObject({
-      subject: { kind: "command", command: "fetch" },
+      subject: {
+        kind: "tool_use",
+        tool: "read",
+        presentation: {
+          label: { pending: "Reading file", completed: "Read file" },
+          title: "hosts",
+        },
+      },
+    });
+  });
+
+  it("asks as the bound bb tool with its definition's presentation", () => {
+    const payload = buildAcpPermissionInteractionPayload({
+      toolCall: {
+        toolCallId: "call-mcp",
+        title: "MCP: tool",
+        kind: "other",
+        injectedTool: {
+          name: "ask_user_question",
+          presentation: {
+            label: { pending: "Asking a question", completed: "Asked" },
+            icon: { glyph: "MessageQuestion" },
+          },
+        },
+      },
+      options: allowDenyOptions,
+    });
+
+    expect(payload).toMatchObject({
+      subject: {
+        kind: "tool_use",
+        tool: "ask_user_question",
+        presentation: { label: { pending: "Asking a question" } },
+      },
     });
   });
 
@@ -67,12 +115,40 @@ describe("buildAcpPermissionInteractionPayload", () => {
     if (payload.kind !== "approval") {
       throw new Error("Expected an approval payload");
     }
-    expect(payload.subject).toMatchObject({
-      kind: "command",
+    expect(payload.subject).toEqual({
+      kind: "tool_use",
       itemId: "call-4",
-      command: "ACP permission request",
+      tool: "tool",
+      presentation: {
+        label: { pending: "Running tool", completed: "Ran tool" },
+        icon: { glyph: "Toolbox" },
+      },
     });
     expect(payload.availableDecisions.length).toBeGreaterThan(0);
+  });
+
+  it("takes the headline from the in-flight call when the permission itself has no title", () => {
+    const payload = buildAcpPermissionInteractionPayload({
+      toolCall: {
+        toolCallId: "call-5",
+        kind: "other",
+        startedToolCall: {
+          sessionUpdate: "tool_call",
+          toolCallId: "call-5",
+          title: "Search the web",
+          kind: "other",
+        },
+      },
+      options: allowDenyOptions,
+    });
+
+    expect(payload).toMatchObject({
+      subject: {
+        kind: "tool_use",
+        tool: "other",
+        presentation: { title: "Search the web" },
+      },
+    });
   });
 
   it("still yields a grantable subject when the request carries no tool call at all", () => {
@@ -84,11 +160,15 @@ describe("buildAcpPermissionInteractionPayload", () => {
     if (payload.kind !== "approval") {
       throw new Error("Expected an approval payload");
     }
-    expect(payload.subject).toMatchObject({
-      kind: "command",
+    expect(payload.subject).toEqual({
+      kind: "tool_use",
       itemId: "acp-permission",
-      command: "ACP permission request",
-      actions: [{ type: "unknown", command: "ACP permission request" }],
+      tool: "tool",
+      presentation: {
+        label: { pending: "Running tool", completed: "Ran tool" },
+        icon: { glyph: "Toolbox" },
+        title: "ACP permission request",
+      },
     });
     expect(payload.availableDecisions).toEqual(["allow_once", "deny"]);
   });
@@ -161,6 +241,8 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
           parentDir: "/tmp/qa-1719",
         },
         startedToolCall: {
+          sessionUpdate: "tool_call",
+          toolCallId: "write-tool-1",
           title: "Editing notes.md",
           kind: "edit",
           locations: [{ path: "/tmp/qa-1719/notes.md" }],
@@ -178,7 +260,7 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
     });
   });
 
-  it("keeps a generic other-kind permission with locations as a command subject when nothing signals a write", () => {
+  it("keeps a generic other-kind permission with locations a tool_use subject when nothing signals a write", () => {
     const payload = buildAcpPermissionInteractionPayload({
       toolCall: {
         toolCallId: "read-tool-1",
@@ -186,6 +268,8 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
         kind: "other",
         locations: [{ path: "/tmp/qa-1719/secrets.txt" }],
         startedToolCall: {
+          sessionUpdate: "tool_call",
+          toolCallId: "read-tool-1",
           title: "Reading secrets.txt",
           kind: "read",
           locations: [{ path: "/tmp/qa-1719/secrets.txt" }],
@@ -195,11 +279,15 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
     });
 
     expect(payload).toMatchObject({
-      subject: { kind: "command", command: "Read secrets.txt" },
+      subject: {
+        kind: "tool_use",
+        tool: "other",
+        presentation: { title: "Read secrets.txt" },
+      },
     });
   });
 
-  it("keeps an edit-kind permission without any path as a command subject, like the timeline", () => {
+  it("keeps an edit-kind permission without any path a tool_use subject, like the timeline", () => {
     const payload = buildAcpPermissionInteractionPayload({
       toolCall: {
         toolCallId: "write-tool-2",
@@ -211,14 +299,15 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
 
     expect(payload).toMatchObject({
       subject: {
-        kind: "command",
+        kind: "tool_use",
         itemId: "write-tool-2",
-        command: "Edit file",
+        tool: "edit",
+        presentation: { title: "Edit file" },
       },
     });
   });
 
-  it("keeps a move-kind permission as a command subject, like the timeline", () => {
+  it("keeps a move-kind permission a tool_use subject, like the timeline", () => {
     const payload = buildAcpPermissionInteractionPayload({
       toolCall: {
         toolCallId: "move-tool-1",
@@ -230,7 +319,14 @@ describe("buildAcpPermissionInteractionPayload file-change subjects", () => {
     });
 
     expect(payload).toMatchObject({
-      subject: { kind: "command", command: "Move notes.md" },
+      subject: {
+        kind: "tool_use",
+        tool: "move",
+        presentation: {
+          label: { pending: "Moving file", completed: "Moved file" },
+          title: "Move notes.md",
+        },
+      },
     });
   });
 

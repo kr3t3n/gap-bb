@@ -1297,3 +1297,174 @@ describe("in-turn windows and items that only stream", () => {
     },
   );
 });
+
+/**
+ * Two finished turns. Turn 1 starts a command and answers; turn 2 carries a
+ * late `item/completed` for that command, scoped to turn 2 with the degraded
+ * `toolCall` shape the claude-code translator emits once the turn boundary has
+ * cleared its call map. When `reuseCallIdInLaterTurn` is set, turn 2 instead
+ * starts and completes its own item under turn 1's call id after turn 1's
+ * item already finished, the way a resumed ACP session restarts its id counter.
+ */
+function seedCrossTurnCompletion(
+  db: DbConnection,
+  thread: Thread,
+  options: { reuseCallIdInLaterTurn: boolean },
+): void {
+  const events: EventInput[] = [];
+  let sequence = 0;
+  const push = (event: Omit<EventInput, "sequence" | "threadId">): void => {
+    sequence += 1;
+    events.push({ ...event, sequence, threadId: thread.id });
+  };
+  const command = (
+    turnId: string,
+    status: "pending" | "completed",
+    output: string | null,
+  ): Omit<EventInput, "sequence" | "threadId"> => ({
+    type: status === "pending" ? "item/started" : "item/completed",
+    scope: turnScope(turnId),
+    providerThreadId,
+    itemId: "call-1",
+    itemKind: "commandExecution",
+    parentToolCallId: null,
+    data: JSON.stringify({
+      item: {
+        type: "commandExecution",
+        id: "call-1",
+        command: "npm run dev",
+        cwd: "/tmp/test",
+        status,
+        approvalStatus: null,
+        ...(output === null ? {} : { exitCode: 0, aggregatedOutput: output }),
+      },
+    }),
+  });
+  const agentMessage = (
+    turnId: string,
+    id: string,
+    text: string,
+  ): Omit<EventInput, "sequence" | "threadId"> => ({
+    type: "item/completed",
+    scope: turnScope(turnId),
+    providerThreadId,
+    itemId: id,
+    itemKind: "agentMessage",
+    parentToolCallId: null,
+    data: JSON.stringify({ item: { type: "agentMessage", id, text } }),
+  });
+  const turnLifecycle = (
+    turnId: string,
+    type: "turn/started" | "turn/completed",
+  ): Omit<EventInput, "sequence" | "threadId"> => ({
+    type,
+    scope: turnScope(turnId),
+    providerThreadId,
+    itemId: null,
+    itemKind: null,
+    parentToolCallId: null,
+    data: JSON.stringify(
+      type === "turn/started" ? {} : { status: "completed", providerThreadId },
+    ),
+  });
+
+  push(turnLifecycle("turn-1", "turn/started"));
+  push(command("turn-1", "pending", null));
+  if (options.reuseCallIdInLaterTurn) {
+    push(command("turn-1", "completed", "first run"));
+  }
+  push(agentMessage("turn-1", "msg-1", "Dev server is starting."));
+  push(turnLifecycle("turn-1", "turn/completed"));
+  push(turnLifecycle("turn-2", "turn/started"));
+  if (options.reuseCallIdInLaterTurn) {
+    push(command("turn-2", "pending", null));
+    push(command("turn-2", "completed", "second run"));
+  } else {
+    push({
+      type: "item/completed",
+      scope: turnScope("turn-2"),
+      providerThreadId,
+      itemId: "call-1",
+      itemKind: "toolCall",
+      parentToolCallId: null,
+      data: JSON.stringify({
+        item: {
+          type: "toolCall",
+          id: "call-1",
+          tool: "unknown",
+          status: "completed",
+          result: "dev server exited with code 0",
+        },
+      }),
+    });
+  }
+  push(agentMessage("turn-2", "msg-2", "Second turn done."));
+  push(turnLifecycle("turn-2", "turn/completed"));
+
+  insertEvents(db, noopNotifier, events);
+}
+
+/** Each turn row's details next to the same row's inline children. */
+function collectTurnDetailsAndChildren(
+  db: DbConnection,
+  thread: Thread,
+): Map<string, { children: TimelineRow[]; details: TimelineRow[] }> {
+  const byTurnId = new Map<
+    string,
+    { children: TimelineRow[]; details: TimelineRow[] }
+  >();
+  for (const row of buildNestedPage(db, thread, LARGE_BUDGET, null).response
+    .rows) {
+    if (row.kind !== "turn") {
+      continue;
+    }
+    byTurnId.set(row.turnId, {
+      children: row.children ?? [],
+      details: buildTimelineTurnSummaryDetails(db, thread, {
+        includeProviderUnhandledOperations: false,
+        sourceSeqEnd: row.sourceSeqEnd,
+        sourceSeqStart: row.sourceSeqStart,
+        turnId: row.turnId,
+      }).rows,
+    });
+  }
+  return byTurnId;
+}
+
+describe("turn details for an item that finishes in a later turn", () => {
+  it("shows the spawning turn's item completed with its late output", () => {
+    const { db, thread } = setup();
+    seedCrossTurnCompletion(db, thread, { reuseCallIdInLaterTurn: false });
+
+    const turns = collectTurnDetailsAndChildren(db, thread);
+    const turn1 = turns.get("turn-1");
+    expect(turn1).toBeDefined();
+    expect(turn1!.children).toEqual([
+      expect.objectContaining({
+        callId: "call-1",
+        output: "dev server exited with code 0",
+        sourceSeqEnd: 6,
+        status: "completed",
+      }),
+    ]);
+    expect(turn1!.details).toEqual(turn1!.children);
+  });
+
+  it("keeps a later turn's reuse of the call id out of the spawning turn", () => {
+    const { db, thread } = setup();
+    seedCrossTurnCompletion(db, thread, { reuseCallIdInLaterTurn: true });
+
+    const turns = collectTurnDetailsAndChildren(db, thread);
+    expect([...turns.keys()]).toEqual(["turn-1", "turn-2"]);
+    for (const [turnId, { children, details }] of turns) {
+      expect(children, turnId).toEqual([
+        expect.objectContaining({
+          callId: "call-1",
+          output: turnId === "turn-1" ? "first run" : "second run",
+          status: "completed",
+        }),
+      ]);
+      expect(details, turnId).toEqual(children);
+    }
+  });
+});

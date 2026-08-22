@@ -67,12 +67,12 @@ async function loadDeclarations(
     throw new Error(`${pluginId} has no default plugin export`);
   }
   const captured: PluginProviderDeclaration[] = [];
+  const register = (declaration: PluginProviderDeclaration): void => {
+    captured.push(declaration);
+  };
   const bb = {
-    agents: {
-      experimental_registerProvider(declaration: PluginProviderDeclaration) {
-        captured.push(declaration);
-      },
-    },
+    providers: { register },
+    agents: { experimental_registerProvider: register },
   } as unknown as BbPluginApi;
   (entry as (bb: BbPluginApi) => void)(bb);
   if (captured.length === 0) {
@@ -130,6 +130,7 @@ export async function setup(): Promise<void> {
           artifactPath: build.jsPath,
         },
         providerOptions: declaration.experimental_bridgeOptions ?? {},
+        envPassthrough: [...(declaration.experimental_env?.passthrough ?? [])],
         capabilities: wireCapabilities(declaration),
       };
     }
@@ -150,6 +151,7 @@ export async function setup(): Promise<void> {
       }),
       source: { kind: "daemon-bundled", id: bundledBridgeId },
       providerOptions: declaration.experimental_bridgeOptions ?? {},
+      envPassthrough: [...(declaration.experimental_env?.passthrough ?? [])],
       capabilities: wireCapabilities(declaration),
     };
   }

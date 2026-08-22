@@ -15,7 +15,7 @@ import {
 import {
   createBridgeDeltaEventCollector,
   toConformanceMessages,
-} from "../../test/bridge-delta-assembly.js";
+} from "@bb/provider-bridge-protocol/testing";
 
 /**
  * The pi bridge's conformance run: drives the bridge through the canonical

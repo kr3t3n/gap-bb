@@ -314,6 +314,19 @@ describe("consumer-specific config", () => {
     });
   });
 
+  it("carries the launcher's server launch id only when it is set", () => {
+    expect(
+      loadServerConfig({
+        env: createServerRuntimeEnv({ BB_SERVER_LAUNCH_ID: undefined }),
+      }),
+    ).not.toHaveProperty("BB_SERVER_LAUNCH_ID");
+    expect(
+      loadServerConfig({
+        env: createServerRuntimeEnv({ BB_SERVER_LAUNCH_ID: "launch-123" }),
+      }).BB_SERVER_LAUNCH_ID,
+    ).toBe("launch-123");
+  });
+
   it("defaults the server bind host to loopback", () => {
     const serverConfig = loadServerConfig({
       env: createServerRuntimeEnv({

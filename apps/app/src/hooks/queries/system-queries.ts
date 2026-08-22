@@ -1,16 +1,8 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
-import type { AvailableModel, PermissionMode, ProviderInfo } from "@bb/domain";
+import type { PermissionMode, ProviderInfo } from "@bb/domain";
 import { SYSTEM_EXECUTION_OPTIONS_QUERY_KEY } from "@/hooks/queries/query-keys";
-import {
-  HIGH_REASONING_EFFORT,
-  LOW_REASONING_EFFORT,
-  MAX_REASONING_EFFORT,
-  MEDIUM_REASONING_EFFORT,
-  ULTRACODE_REASONING_EFFORT,
-  XHIGH_REASONING_EFFORT,
-  permissionModeValues,
-} from "@bb/domain";
+import { permissionModeValues } from "@bb/domain";
 import { toRecord } from "@bb/core-ui";
 import type {
   SystemCliSkillsStatusResponse,
@@ -82,170 +74,6 @@ type UseSystemProviderInfoArgs = UseSystemProvidersArgs & {
 
 const SYSTEM_EXECUTION_OPTIONS_RETRY_DELAY_MS = 250;
 const SYSTEM_EXECUTION_OPTIONS_RETRY_COUNT = 1;
-const CLAUDE_CODE_PROVIDER_ID = "claude-code";
-
-// ---------------------------------------------------------------------------
-// Cold-cache placeholder data. Rendered only as react-query placeholderData
-// while the first execution-options probe is in flight on an install that has
-// never cached a probe result; every later render uses last-seen real data.
-// Values are copied verbatim from the retired app-side catalog import so the
-// preload window looks identical. This placeholder should move server-side and
-// be deleted from the app.
-// ---------------------------------------------------------------------------
-
-const XHIGH_LADDER = [
-  LOW_REASONING_EFFORT,
-  MEDIUM_REASONING_EFFORT,
-  HIGH_REASONING_EFFORT,
-  XHIGH_REASONING_EFFORT,
-  ULTRACODE_REASONING_EFFORT,
-  MAX_REASONING_EFFORT,
-] as const;
-
-const CLAUDE_CODE_PLACEHOLDER_MODELS: AvailableModel[] = [
-  {
-    id: "claude-fable-5",
-    model: "claude-fable-5",
-    displayName: "Fable 5",
-    description:
-      "Fable 5 for demanding reasoning; requires Claude Code v2.1.170+",
-    supportedReasoningEfforts: [...XHIGH_LADDER],
-    defaultReasoningEffort: "high",
-    isDefault: false,
-  },
-  {
-    id: "claude-opus-5[1m]",
-    model: "claude-opus-5[1m]",
-    displayName: "Opus 5 (1M)",
-    description: "Opus 5 with 1M context for complex long coding sessions",
-    supportedReasoningEfforts: [...XHIGH_LADDER],
-    defaultReasoningEffort: "high",
-    isDefault: true,
-  },
-  {
-    id: "claude-opus-4-8[1m]",
-    model: "claude-opus-4-8[1m]",
-    displayName: "Opus 4.8 (1M)",
-    description: "Opus 4.8 with 1M context for complex long coding sessions",
-    supportedReasoningEfforts: [...XHIGH_LADDER],
-    defaultReasoningEffort: "high",
-    isDefault: false,
-  },
-  {
-    id: "claude-opus-4-7[1m]",
-    model: "claude-opus-4-7[1m]",
-    displayName: "Opus 4.7 (1M)",
-    description: "Opus 4.7 with 1M context for complex long coding sessions",
-    supportedReasoningEfforts: [...XHIGH_LADDER],
-    defaultReasoningEffort: "medium",
-    isDefault: false,
-  },
-  {
-    id: "claude-sonnet-5",
-    model: "claude-sonnet-5",
-    displayName: "Sonnet 5",
-    description: "Sonnet 5 for everyday coding tasks with deeper reasoning",
-    supportedReasoningEfforts: [...XHIGH_LADDER],
-    defaultReasoningEffort: "medium",
-    isDefault: false,
-  },
-];
-
-const PLACEHOLDER_PROVIDER_INFOS: ProviderInfo[] = [
-  {
-    available: true,
-    id: "codex",
-    displayName: "Codex",
-    logoUrl: null,
-    experimental_providerHealth: true,
-    experimental_providerUsage: true,
-    experimental_providerInstallation: false,
-    capabilities: {
-      supportsThreadArchive: true,
-      supportsThreadRename: true,
-      supportsServiceTier: true,
-      supportsNativeUserQuestion: false,
-      supportsFork: true,
-      supportsSessionRewind: true,
-      permissionModes: ["accept-edits", "auto", "full"],
-    },
-    composerActions: [
-      { kind: "skills", trigger: "/" },
-      {
-        kind: "plan",
-        command: { trigger: "/", name: "plan", trailingText: " " },
-      },
-      {
-        kind: "goal",
-        command: { trigger: "/", name: "goal", trailingText: " " },
-      },
-    ],
-  },
-  {
-    available: true,
-    id: "claude-code",
-    displayName: "Claude Code",
-    logoUrl: null,
-    experimental_providerHealth: true,
-    experimental_providerUsage: true,
-    experimental_providerInstallation: false,
-    capabilities: {
-      supportsThreadArchive: false,
-      supportsThreadRename: false,
-      supportsServiceTier: false,
-      supportsNativeUserQuestion: true,
-      supportsFork: true,
-      supportsSessionRewind: true,
-      permissionModes: ["accept-edits", "auto", "full"],
-    },
-    composerActions: [
-      { kind: "skills", trigger: "/" },
-      {
-        kind: "plan",
-        command: { trigger: "/", name: "plan", trailingText: " " },
-      },
-    ],
-  },
-  {
-    available: true,
-    id: "pi",
-    displayName: "Pi",
-    logoUrl: null,
-    experimental_providerHealth: true,
-    experimental_providerUsage: true,
-    experimental_providerInstallation: false,
-    capabilities: {
-      supportsThreadArchive: false,
-      supportsThreadRename: false,
-      supportsServiceTier: false,
-      supportsNativeUserQuestion: false,
-      supportsFork: true,
-      supportsSessionRewind: true,
-      permissionModes: ["full"],
-    },
-    composerActions: [{ kind: "skills", trigger: "/" }],
-  },
-  {
-    available: true,
-    id: "acp-cursor",
-    displayName: "Cursor",
-    logoUrl: null,
-    experimental_providerHealth: true,
-    experimental_providerUsage: true,
-    experimental_providerInstallation: false,
-    capabilities: {
-      supportsThreadArchive: false,
-      supportsThreadRename: false,
-      supportsServiceTier: true,
-      supportsNativeUserQuestion: false,
-      supportsFork: true,
-      supportsSessionRewind: false,
-      permissionModes: ["accept-edits", "full"],
-    },
-    composerActions: [{ kind: "skills", trigger: "/" }],
-  },
-];
-
 // Model probes run on the host (Claude's spawns a CLI process; every provider
 // pays a round trip), so waiting for one leaves the composer with no model list
 // for seconds on each full load. Render the last catalog this routing actually
@@ -253,17 +81,16 @@ const PLACEHOLDER_PROVIDER_INFOS: ProviderInfo[] = [
 // lands: its ids match what the fresh probe will return, so a selection made
 // during the preload window survives instead of snapping back to a default.
 //
-// On a cold cache only Claude Code has curated aliases to fall back on; other
-// built-in providers keep their branded identity with an empty model list while
-// discovery runs, and a provider that no replayable list can vouch for waits
-// for the probe, exactly as before.
+// On a cold cache there is nothing to replay: the app vendors no provider
+// roster and no model catalog of its own (a provider's declared cold-cache
+// fallback is served by the server when a probe fails), so the composer waits
+// for the first probe, and a provider that no replayable list can vouch for
+// waits too.
 //
 // The provider list rides along from its own last-known cache: the live list
-// carries the host's custom and installed ACP agents, so replaying only the
-// built-in providers would select the first built-in one for a beat whenever
-// the remembered provider is not built in. If the remembered provider is not
-// in the list we can replay, there is no honest provisional frame and the
-// composer waits, as it did before.
+// carries the host's custom and installed ACP agents. If the remembered
+// provider is not in the list we can replay, there is no honest provisional
+// frame and the composer waits.
 //
 // Callers must gate model recovery on `isPlaceholderData` either way: a cached
 // catalog can be stale, so absence from this list is not evidence that a stored
@@ -324,23 +151,19 @@ function resolveExecutionOptionsPlaceholder({
   const remembered = readCachedProviderList(providersCacheKey);
   const providers =
     previousProviders ??
-    (remembered !== null && remembered.length > 0
-      ? remembered
-      : PLACEHOLDER_PROVIDER_INFOS);
+    (remembered !== null && remembered.length > 0 ? remembered : null);
   if (
-    providerId !== null &&
-    !providers.some((provider) => provider.id === providerId)
+    providers === null ||
+    (providerId !== null &&
+      !providers.some((provider) => provider.id === providerId))
   ) {
     return undefined;
   }
-  const isClaudeCode = providerId === CLAUDE_CODE_PROVIDER_ID;
   return {
     providers,
     // A prior response's models belong to the prior provider. Only this
-    // provider's own remembered catalog (or Claude's curated aliases) may
-    // stand in while its probe runs.
-    models:
-      cached?.models ?? (isClaudeCode ? CLAUDE_CODE_PLACEHOLDER_MODELS : []),
+    // provider's own remembered catalog may stand in while its probe runs.
+    models: cached?.models ?? [],
     selectedOnlyModels: cached?.selectedOnlyModels ?? [],
     permissionCeiling: PLACEHOLDER_PERMISSION_CEILING,
     modelLoadError: null,

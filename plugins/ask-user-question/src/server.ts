@@ -28,6 +28,13 @@ export default function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: TOOL_NAME,
     description: TOOL_DESCRIPTION,
+    // The question is fully represented by its interaction row; the tool
+    // row beside it would read as a duplicate, so clients collapse it.
+    experimental_presentation: {
+      label: { pending: "Asking a question", completed: "Asked a question" },
+      icon: { glyph: "MessageQuestion" },
+      suppress: true,
+    },
     parameters: toolInputSchema,
     async execute(input, ctx) {
       const invalid = validateToolInput(input);

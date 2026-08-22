@@ -1,6 +1,6 @@
 // For now, we store attachments on the server's local file system.
 // We might move this to something like R2 or S3 in the future.
-// eslint-disable-next-line no-restricted-imports
+// oxlint-disable-next-line no-restricted-imports
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
   basename,
@@ -20,6 +20,21 @@ import { ApiError } from "../../errors.js";
 
 const IMAGE_LIMIT_BYTES = 10 * 1024 * 1024;
 const FILE_LIMIT_BYTES = 25 * 1024 * 1024;
+
+// HEIC/HEIF (the iPhone camera default) used to be stored and served verbatim
+// as a localImage, but nothing downstream can decode it: Chromium (web app and
+// Electron shell) has no HEVC decoder, and no provider image input accepts it,
+// so the composer showed a broken thumbnail while the model silently received
+// nothing. bb ships no transcoder, so refuse the image upload with a reason.
+// Only the image MIME types are refused: the same bytes sent with a non-image
+// MIME type still store as a plain localFile, which an agent can convert on
+// the host.
+const HEIF_IMAGE_MIME_TYPES = new Set([
+  "image/heic",
+  "image/heic-sequence",
+  "image/heif",
+  "image/heif-sequence",
+]);
 
 type PromptAttachmentInput = Extract<
   PromptInput,
@@ -137,11 +152,23 @@ export async function validatePromptAttachmentReferences(
   }
 }
 
+function isHeifImageUpload(file: File): boolean {
+  const mimeType = (file.type.split(";")[0] ?? "").trim().toLowerCase();
+  return HEIF_IMAGE_MIME_TYPES.has(mimeType);
+}
+
 export async function storeAttachment(
   dataDir: string,
   projectId: string,
   file: File,
 ): Promise<UploadedPromptAttachment> {
+  if (isHeifImageUpload(file)) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      "HEIC images are not supported. Convert the image to JPEG or PNG before attaching it.",
+    );
+  }
   const isImage = (file.type || "").startsWith("image/");
   const sizeLimit = isImage ? IMAGE_LIMIT_BYTES : FILE_LIMIT_BYTES;
   if (file.size > sizeLimit) {

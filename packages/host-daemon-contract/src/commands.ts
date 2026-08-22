@@ -271,6 +271,13 @@ const hostDaemonBridgeLaunchSchema = z
       })
       .strict(),
     providerOptions: jsonObjectSchema,
+    /**
+     * Daemon environment variable names the bridge may read (the provider's
+     * declared `experimental_env.passthrough`). The daemon strips every
+     * inherited `BB_*` variable from provider processes and forwards exactly
+     * these. Always present; empty when the provider declared none.
+     */
+    envPassthrough: z.array(z.string().min(1)),
   })
   .strict();
 export type HostDaemonBridgeLaunch = z.infer<
@@ -368,8 +375,15 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
     threadStoragePath: z.string().min(1).optional(),
     /** Present means fork the new thread from this source provider session
-     *  instead of starting fresh; absent means a normal start. */
-    fork: z.object({ sourceProviderThreadId: z.string().min(1) }).optional(),
+     *  instead of starting fresh; absent means a normal start. The clone
+     *  retains the source history through `sourceProviderCheckpointId`; an
+     *  absent checkpoint clones the session tip. */
+    fork: z
+      .object({
+        sourceProviderThreadId: z.string().min(1),
+        sourceProviderCheckpointId: z.string().min(1).optional(),
+      })
+      .optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -418,7 +432,11 @@ export type TurnSubmitTarget = z.infer<typeof turnSubmitTargetSchema>;
 
 /**
  * Submit input for an existing provider thread. The daemon chooses whether
- * auto-targeted input steers the expected active turn or starts a new turn.
+ * auto-targeted input steers the live active turn or starts a new turn. The
+ * nullable expected id is the server's snapshot; the daemon rechecks its
+ * runtime so input sent while turn/started is still in flight is not mistaken
+ * for a competing turn, and rejects instead of starting another turn if the
+ * pending start does not produce an id within its bounded wait.
  */
 const turnSubmitCommandSchema = hostDaemonThreadTargetSchema
   .extend({

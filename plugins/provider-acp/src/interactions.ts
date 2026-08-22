@@ -3,27 +3,42 @@
  *
  * Maps the ACP bridge's permission requests onto the canonical
  * `PendingInteractionPayload`/`PendingInteractionResolution` shapes from
- * `@bb/domain`. Extracted from the ACP adapter so the adapter (legacy
- * dialect) and the bridge's canonical `interaction/request` path share one
- * mapping in both directions.
+ * `@bb/domain`, in both directions. A command asks as a `command` subject, a
+ * file change as a `file_change` subject, and everything else — an MCP tool,
+ * a read outside the project, a kind with no core shape — as a `tool_use`
+ * subject carrying the same presentation its timeline row does.
  */
 
 import {
   type PendingInteractionApprovalDecision,
+  type PendingInteractionApprovalSubject,
   type PendingInteractionPayload,
   type PendingInteractionResolution,
   isApprovalPendingInteractionPayload,
   isApprovalPendingInteractionResolution,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import { toolKindPresentation } from "./presentation.js";
 import {
   type AcpToolCallOperation,
   type AcpToolCallOperationInput,
-  classifyAcpToolCall,
-  extractAcpCommand,
+  classifyAcpToolCall as classifyAcpToolCallOperation,
   extractAcpToolCallPaths,
   resolveAcpFileChangeWriteScope,
 } from "./tool-call-operation.js";
-import type { AcpPermissionOptionKind } from "./wire.js";
+import {
+  classifyAcpToolCall,
+  type AcpInjectedTool,
+} from "./tool-classification.js";
+import type {
+  AcpPermissionOptionKind,
+  AcpToolCallUpdateEvent,
+  AcpToolKind,
+} from "./wire.js";
+
+type ToolUseApprovalSubject = Extract<
+  PendingInteractionApprovalSubject,
+  { kind: "tool_use" }
+>;
 
 /**
  * The bridge maps the user's decision back onto the ACP options it kept for
@@ -35,13 +50,16 @@ interface AcpPermissionResponse {
 
 interface AcpPermissionToolCall extends AcpToolCallOperationInput {
   toolCallId: string;
+  kind?: AcpToolKind | undefined;
   /**
    * The in-flight `tool_call` with the same id, when the agent started one
    * before it asked. opencode's `external_directory` permission (a write
    * outside the project) arrives as the generic kind `other` with a bare
    * directory title; the running `edit` tool call is the write signal.
    */
-  startedToolCall?: AcpToolCallOperationInput | undefined;
+  startedToolCall?: AcpToolCallUpdateEvent | undefined;
+  /** The bb-injected tool the in-flight call is bound to, if any (Q31). */
+  injectedTool?: AcpInjectedTool | undefined;
 }
 
 /**
@@ -51,11 +69,72 @@ interface AcpPermissionToolCall extends AcpToolCallOperationInput {
 function classifyAcpPermission(
   toolCall: AcpPermissionToolCall,
 ): AcpToolCallOperation {
-  const own = classifyAcpToolCall(toolCall);
+  const own = classifyAcpToolCallOperation(toolCall);
   if (own.kind !== "generic" || !toolCall.startedToolCall) {
     return own;
   }
-  return classifyAcpToolCall(toolCall.startedToolCall);
+  return classifyAcpToolCallOperation(toolCall.startedToolCall);
+}
+
+/** The permission's own tool call as the translator's event shape. */
+function permissionToolCallEvent(
+  toolCall: AcpPermissionToolCall,
+): AcpToolCallUpdateEvent {
+  return {
+    sessionUpdate: "tool_call",
+    toolCallId: toolCall.toolCallId,
+    ...(toolCall.title !== undefined ? { title: toolCall.title } : {}),
+    ...(toolCall.kind !== undefined ? { kind: toolCall.kind } : {}),
+    ...(toolCall.content !== undefined
+      ? { content: [...toolCall.content] }
+      : {}),
+    ...(toolCall.locations !== undefined
+      ? { locations: [...toolCall.locations] }
+      : {}),
+    ...(toolCall.rawInput !== undefined ? { rawInput: toolCall.rawInput } : {}),
+  };
+}
+
+/**
+ * The `tool_use` subject for a permission that is neither a command nor a
+ * file change: the same classification the timeline row gets, so the banner
+ * and the row read alike. The permission's own tool call describes the ask;
+ * when it carries no title the in-flight call it belongs to supplies one. A
+ * request with no tool call at all still yields a grantable subject.
+ */
+function buildToolUseSubject(
+  toolCall: AcpPermissionToolCall | undefined,
+): ToolUseApprovalSubject {
+  if (toolCall === undefined) {
+    return {
+      kind: "tool_use",
+      itemId: "acp-permission",
+      tool: "tool",
+      presentation: toolKindPresentation({
+        kind: undefined,
+        title: "ACP permission request",
+      }),
+    };
+  }
+  const own = classifyAcpToolCall(
+    permissionToolCallEvent(toolCall),
+    toolCall.injectedTool,
+  );
+  const described =
+    own.presentation.title === undefined && toolCall.startedToolCall
+      ? classifyAcpToolCall(toolCall.startedToolCall, toolCall.injectedTool)
+      : own;
+  return {
+    kind: "tool_use",
+    itemId: toolCall.toolCallId,
+    tool:
+      described.item.type === "tool"
+        ? described.item.tool
+        : (toolCall.kind ??
+          toolCall.startedToolCall?.kind ??
+          described.item.type),
+    presentation: described.presentation,
+  };
 }
 
 export function buildAcpApprovalDecisions(
@@ -75,14 +154,6 @@ export function buildAcpApprovalDecisions(
   // An options list with a single odd kind still needs one decision; fall back
   // to deny so the runtime's auto-deny policy can always settle the request.
   return decisions.length > 0 ? decisions : ["deny"];
-}
-
-function buildOpaqueAcpPermissionCommand(
-  toolCall: AcpPermissionToolCall,
-): string {
-  return (
-    extractAcpCommand(toolCall) ?? toolCall.kind ?? "ACP permission request"
-  );
 }
 
 /** The canonical approval payload for an ACP `session/request_permission`. */
@@ -112,25 +183,24 @@ export function buildAcpPermissionInteractionPayload(args: {
       availableDecisions,
     };
   }
-  // Commands and generic tools both take the command subject: it is the one
-  // canonical subject that carries free text, and the fallback chain
-  // command → title → kind → fixed text always yields a grantable subject.
-  const command =
-    operation?.kind === "command"
-      ? operation.command
-      : toolCall
-        ? buildOpaqueAcpPermissionCommand(toolCall)
-        : "ACP permission request";
+  if (toolCall && operation?.kind === "command") {
+    return {
+      kind: "approval",
+      subject: {
+        kind: "command",
+        itemId: toolCall.toolCallId,
+        command: operation.command,
+        cwd: null,
+        actions: [{ type: "unknown", command: operation.command }],
+        sessionGrant: null,
+      },
+      reason: null,
+      availableDecisions,
+    };
+  }
   return {
     kind: "approval",
-    subject: {
-      kind: "command",
-      itemId: toolCall?.toolCallId ?? "acp-permission",
-      command,
-      cwd: null,
-      actions: [{ type: "unknown", command }],
-      sessionGrant: null,
-    },
+    subject: buildToolUseSubject(toolCall),
     reason: null,
     availableDecisions,
   };

@@ -18,14 +18,7 @@ import { FullPage } from "./SettingsView.stories";
 
 function NavigableSettingsStory() {
   const route = useSettingsStoryRoute();
-  const label =
-    route.kind === "machine"
-      ? route.id
-      : route.kind === "provider"
-        ? route.id === "codex"
-          ? "Codex"
-          : "Claude Code"
-        : route.id;
+  const label = route.id;
 
   return (
     <SettingsStoryChrome>
@@ -40,7 +33,7 @@ afterEach(() => {
 });
 
 describe("settings/Settings/Full Page story chrome", () => {
-  it("navigates between Settings sections and provider pages", () => {
+  it("navigates between Settings sections", () => {
     render(
       <MemoryRouter initialEntries={["/"]}>
         <TooltipProvider>
@@ -64,10 +57,12 @@ describe("settings/Settings/Full Page story chrome", () => {
         .getAttribute("aria-current"),
     ).toBe("page");
 
-    fireEvent.click(screen.getByRole("link", { name: /Codex/ }));
-    expect(screen.getByRole("heading", { name: "Codex" })).toBeDefined();
+    fireEvent.click(screen.getByRole("link", { name: "Providers" }));
+    expect(screen.getByRole("heading", { name: "providers" })).toBeDefined();
     expect(
-      screen.getByRole("link", { name: /Codex/ }).getAttribute("aria-current"),
+      screen
+        .getByRole("link", { name: "Providers" })
+        .getAttribute("aria-current"),
     ).toBe("page");
     expect(
       screen

@@ -66,7 +66,6 @@ const ACP_REASONING_LEVELS: readonly ReasoningLevel[] = [
 ];
 
 const ACP_SERVER_CAPABILITIES: ProviderServerCapabilities = {
-  supportsWorkflows: false,
   reasoningLevels: ACP_REASONING_LEVELS,
   fork: ACP_FORK,
   // The registry answers dynamic ids from the resolved config record instead.

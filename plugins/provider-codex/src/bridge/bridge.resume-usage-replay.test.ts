@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ThreadEvent } from "@bb/domain";
-import { assembleCapturedThreadEvents } from "@bb/agent-runtime/test/bridge-delta-assembly";
-import { createBridgeJsonRpcTestHarness } from "@bb/provider-bridge-protocol/testing";
+import {
+  experimental_assembleCapturedThreadEvents as assembleCapturedThreadEvents,
+  experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 import { handleLine } from "./bridge.js";
 
 /**

@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  detectGitRepo,
+  detectGitRepoKind,
   getCheckoutRef,
   getWorkspaceGitOperation,
   parseNameStatusEntries,
@@ -10,6 +12,7 @@ import {
   parsePorcelainEntries,
   readDefaultBranchRefs,
   readGitBlob,
+  readGitRepositoryState,
   runGit,
   runGitWithNullRecordLimit,
   runShellPipeline,
@@ -88,6 +91,23 @@ async function pushRemoteMainCommit(remotePath: string) {
   await runGit(["add", "."], { cwd: clonePath });
   await runGit(["commit", "-m", "Remote edit"], { cwd: clonePath });
   await runGit(["push", "origin", "main"], { cwd: clonePath });
+}
+
+/**
+ * The "bare clone + sibling worktrees" layout: `<root>/.bare` holds the bare
+ * clone, `<root>/.git` is a gitdir file pointing at it, and each branch lives
+ * in a sibling directory created with `git worktree add`. The root is a git
+ * repository but not a work tree.
+ */
+async function initBareWorktreeLayout() {
+  const origin = await initReadGitBlobRepo();
+  await runGit(["branch", "feature-a"], { cwd: origin });
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-bare-layout-"));
+  tempDirs.push(root);
+  await runGit(["clone", "--bare", origin, ".bare"], { cwd: root });
+  await fs.writeFile(path.join(root, ".git"), "gitdir: ./.bare\n", "utf8");
+  await runGit(["worktree", "add", "feature-a", "feature-a"], { cwd: root });
+  return { root, worktreePath: path.join(root, "feature-a") };
 }
 
 afterEach(async () => {
@@ -200,7 +220,48 @@ describe("runGitWithNullRecordLimit", () => {
   });
 });
 
+describe("detectGitRepoKind", () => {
+  it("tells a bare repository root apart from its worktrees and plain directories", async () => {
+    const { root, worktreePath } = await initBareWorktreeLayout();
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "bb-plain-dir-"));
+    tempDirs.push(plainDir);
+
+    await expect(detectGitRepoKind(root)).resolves.toBe("bare");
+    await expect(detectGitRepoKind(path.join(root, ".bare"))).resolves.toBe(
+      "bare",
+    );
+    await expect(detectGitRepoKind(worktreePath)).resolves.toBe("work-tree");
+    await expect(detectGitRepoKind(plainDir)).resolves.toBe("none");
+  });
+
+  it("keeps detectGitRepo scoped to work trees so bare roots get no checkout UI", async () => {
+    const { root, worktreePath } = await initBareWorktreeLayout();
+
+    await expect(detectGitRepo(root)).resolves.toBe(false);
+    await expect(detectGitRepo(worktreePath)).resolves.toBe(true);
+  });
+});
+
+describe("readGitRepositoryState", () => {
+  it("treats a bare repository root as a repository with commits", async () => {
+    const { root } = await initBareWorktreeLayout();
+
+    await expect(readGitRepositoryState(root)).resolves.toBe("has_commits");
+  });
+});
+
 describe("getCheckoutRef", () => {
+  it("reports the HEAD branch of a bare repository root", async () => {
+    const { root } = await initBareWorktreeLayout();
+    const head = await runGit(["rev-parse", "HEAD"], { cwd: root });
+
+    await expect(getCheckoutRef(root)).resolves.toEqual({
+      kind: "branch",
+      branchName: "main",
+      headSha: head.stdout.trim(),
+    });
+  });
+
   it("reports branch checkouts with HEAD sha", async () => {
     const repoPath = await initReadGitBlobRepo();
     const head = await runGit(["rev-parse", "HEAD"], { cwd: repoPath });
@@ -363,6 +424,31 @@ describe("command timeouts", () => {
       code: "shell_pipeline_timeout",
       name: "WorkspaceError",
     });
+  });
+});
+
+describe("user-shell Git resolution", () => {
+  it("uses the resolved shell PATH for Git commands and Git pipelines", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "bb-git-shell-path-workspace-"),
+    );
+    const binPath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "bb-git-shell-path-bin-"),
+    );
+    tempDirs.push(workspacePath, binPath);
+    const gitPath = path.join(binPath, "git");
+    await fs.writeFile(gitPath, "#!/bin/sh\nprintf 'user-shell-git\\n'\n");
+    await fs.chmod(gitPath, 0o755);
+
+    await expect(
+      runGit(["--version"], { cwd: workspacePath, shellPath: binPath }),
+    ).resolves.toMatchObject({ stdout: "user-shell-git\n" });
+    await expect(
+      runShellPipeline("git --version", [], {
+        cwd: workspacePath,
+        shellPath: binPath,
+      }),
+    ).resolves.toMatchObject({ stdout: "user-shell-git\n" });
   });
 });
 

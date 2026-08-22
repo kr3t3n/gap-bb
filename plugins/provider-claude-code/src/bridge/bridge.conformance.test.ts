@@ -7,18 +7,16 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
-  formatConformanceReport,
-  runBridgeConformance,
-  type BridgeConformanceTransport,
-} from "@bb/provider-bridge-protocol/conformance";
-import {
-  captureBridgeJsonRpcOutput,
-  type CapturedBridgeJsonRpcOutput,
-} from "@bb/provider-bridge-protocol/testing";
-import {
-  createBridgeDeltaEventCollector,
-  toConformanceMessages,
-} from "@bb/agent-runtime/test/bridge-delta-assembly";
+  experimental_captureBridgeJsonRpcOutput as captureBridgeJsonRpcOutput,
+  experimental_createBridgeDeltaEventCollector as createBridgeDeltaEventCollector,
+  experimental_formatConformanceReport as formatConformanceReport,
+  experimental_runBridgeConformance as runBridgeConformance,
+  experimental_toConformanceMessages as toConformanceMessages,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type {
+  BridgeConformanceTransport,
+  CapturedBridgeJsonRpcOutput,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
 
 /**
  * The claude-code bridge's conformance run: drives the bridge through the

@@ -421,4 +421,4 @@ payload changes.
 - The submission skill creates registry pull requests. No hosted submission
   service or in-app submission dialog exists.
 
-> AGENT GENERATED: by Claude Fable 5
+> AGENT GENERATED

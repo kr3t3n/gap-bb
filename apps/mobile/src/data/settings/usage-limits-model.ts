@@ -1,3 +1,4 @@
+import type { ProviderInfo } from "@bb/domain";
 import type {
   ProviderUsage,
   ProviderUsageResponse,
@@ -9,50 +10,42 @@ import type {
  * apps/app/src/components/settings/UsageLimitsSettingsSection.tsx).
  */
 
-export type UsageProviderKey = keyof ProviderUsageResponse;
-
 export interface UsageProviderConfig {
-  key: UsageProviderKey;
+  providerId: string;
   name: string;
-  providerId: "codex" | "claude-code" | "acp-cursor";
   signInHint: string;
   expiredHint: string;
 }
 
-export const USAGE_PROVIDERS: readonly UsageProviderConfig[] = [
-  {
-    key: "codex",
-    name: "Codex",
-    providerId: "codex",
-    signInHint: "Run `codex` on the machine to sign in and see your usage.",
-    expiredHint:
-      "Your Codex session expired. Run `codex` on the machine, then reload usage.",
-  },
-  {
-    key: "claudeCode",
-    name: "Claude Code",
-    providerId: "claude-code",
-    signInHint: "Run `claude` on the machine to sign in and see your usage.",
-    expiredHint:
-      "Your Claude session expired. Run `claude` on the machine, then reload usage.",
-  },
-  {
-    key: "cursor",
-    name: "Cursor",
-    providerId: "acp-cursor",
-    signInHint:
-      "Run `cursor-agent login` on the machine to sign in and see your usage.",
-    expiredHint:
-      "Your Cursor session expired. Run `cursor-agent login` on the machine, then reload usage.",
-  },
-];
+/**
+ * Usage rows for the providers that declare usage, in picker order. Copy
+ * comes from each provider's declared `strings`; a provider that declares
+ * none gets generic copy built from its name.
+ */
+export function usageProviderConfigs(
+  providers: readonly ProviderInfo[],
+): UsageProviderConfig[] {
+  return providers
+    .filter((provider) => provider.experimental_providerUsage)
+    .map((provider) => ({
+      providerId: provider.id,
+      name: provider.displayName,
+      signInHint:
+        provider.strings?.signInHint ??
+        `Sign in to ${provider.displayName} on the machine, then reload usage.`,
+      expiredHint:
+        provider.strings?.expiredHint ??
+        `Your ${provider.displayName} session expired. Sign in again on the machine, then reload usage.`,
+    }));
+}
 
 /** Providers whose CLI is installed on the machine (the web hides `not_installed`). */
 export function visibleUsageProviders(
+  configs: readonly UsageProviderConfig[],
   usage: Partial<ProviderUsageResponse>,
 ): UsageProviderConfig[] {
-  return USAGE_PROVIDERS.filter(
-    (config) => usage[config.key]?.status !== "not_installed",
+  return configs.filter(
+    (config) => usage[config.providerId]?.status !== "not_installed",
   );
 }
 

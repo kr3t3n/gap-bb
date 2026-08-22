@@ -67,6 +67,12 @@ export const BUILTIN_PLUGINS = [
     category: "Context & knowledge",
   },
   {
+    name: "plugin-api-tester",
+    pluginId: "plugin-api-tester",
+    defaultEnabled: false,
+    category: "Developer tools",
+  },
+  {
     name: "inline-vis",
     pluginId: "inline-vis",
     defaultEnabled: true,
@@ -80,10 +86,13 @@ export const BUILTIN_PLUGINS = [
   },
   // First-party agent provider plugins: each declares one of the providers
   // the core catalog used to seed. With the seed deleted these declarations
-  // are the only source, so disabling one removes its provider.
+  // are the only source, so disabling one removes its provider. Their order
+  // here IS the install order — the provider picker's default order and the
+  // initial default provider come from it (bundled plugins rank first, in
+  // this order; every other plugin ranks by install time).
   {
-    name: "provider-acp",
-    pluginId: "provider-acp",
+    name: "provider-codex",
+    pluginId: "provider-codex",
     defaultEnabled: true,
     category: "Agent interaction",
   },
@@ -94,14 +103,14 @@ export const BUILTIN_PLUGINS = [
     category: "Agent interaction",
   },
   {
-    name: "provider-codex",
-    pluginId: "provider-codex",
+    name: "provider-pi",
+    pluginId: "provider-pi",
     defaultEnabled: true,
     category: "Agent interaction",
   },
   {
-    name: "provider-pi",
-    pluginId: "provider-pi",
+    name: "provider-acp",
+    pluginId: "provider-acp",
     defaultEnabled: true,
     category: "Agent interaction",
   },

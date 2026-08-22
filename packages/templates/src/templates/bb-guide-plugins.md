@@ -137,14 +137,17 @@ and the `bb tasks` command. Common agent operations are:
   bb tasks comment <key-or-id> (--body <markdown> | --body-file <path>) [--json]
   bb tasks attachment add <key-or-comment-id> --file <path> [--json]
   bb tasks attachment get <attachment-id> --out <path> [--json]
-  bb tasks attach <key-or-id> [--json]
+  bb tasks attach <key-or-id> [--thread <thread-id>] [--json]
+  bb tasks detach <key-or-id> [--thread <thread-id>] [--json]
   bb tasks update <key-or-id> --status in_review [--json]
   bb tasks update <key-or-id> (--parent <parent-key-or-id> | --no-parent) [--json]
 
 Run `bb tasks --help` for project, folder, task, label, attachment, and demo-data
 commands, plus preset management, delegation, and attached-thread inspection.
 Delegated threads are attached automatically; use `bb tasks attach` only when
-work started outside Tasks. Task update resolves both task keys and IDs for
+work started outside Tasks, and `bb tasks detach` when a thread is done with a
+task or a respawned worker replaced it. `bb tasks threads <key>` lists live
+threads first, newest first. Task update resolves both task keys and IDs for
 `--parent`; use `--no-parent` to promote a subtask to the top level. File paths
 in tasks commands resolve on the invoking machine (the thread's machine inside
 an agent thread, otherwise the server's); pass `--machine <id-or-name>` to
@@ -215,7 +218,10 @@ added/updated/unchanged counts.
                                  tag, engine ranges, install time, and recent
                                  activation history
   bb plugin enable|disable <id>  Load or unload an installed plugin
-  bb plugin reload [id]          Re-run factories against current sources
+  bb plugin reload [id]          Re-run factories against current sources.
+                                 Exits 1 when a plugin does not come up on
+                                 them (previous instance kept, or degraded
+                                 because a service ignored its abort)
   bb plugin config <id> [set <key> <value> | unset <key>]
                                  Show or change a plugin's declared settings
   bb plugin logs <id> [-n N] [-f]  Print (or follow) a plugin's bb.log output
@@ -560,6 +566,13 @@ encoded, scheme-safe href; traversal paths, ill-formed Unicode, and other
 malformed runtime targets are inert in both the app and SDK test harness. Its
 lazy context menu adds Open with, preferred-external, installed-app, and copy
 actions without reading the file or discovering editors on mount.
+experimental_ProviderModelPicker is the controlled
+`{ providerId, model, reasoningLevel, serviceTier? }` selector backed by the
+same catalog and picker as bb's composers; provider switches emit only after
+the target provider's verified defaults and capabilities resolve. Its optional
+`routing` targets a host or existing environment; `disabled` renders the same
+selection summary read-only. Tasks presets and Automations use this component
+instead of plugin-owned catalog RPCs.
 Every `experimental_fixedTabs` registration must include `panelId` equal to its
 containing nav panel's `id`; it is also an owner-scoped reference. Add
 `experimental_target: { validate }` for a typed JSON-safe transient target,
@@ -576,7 +589,12 @@ class-variance-authority libraries are runtime-shimmed (never bundled) —
 though source and diffs should go through the host's own
 experimental_SourceCode / experimental_Diff components rather than
 @pierre/diffs directly, so bb owns patch normalization, syntax
-highlighting, and the live code theme.
+highlighting, and the live code theme. A Diff caller that has loaded complete
+old/new UTF-8 file contents can pass them through
+`experimental_fullFileContents` to enable
+expand-context controls without exposing Pierre types. BB's original renderer
+validates those paths and hunk lines before enabling expansion; a replacement
+that implements its own expansion must do the same.
 Everything else (zod included) bundles from the plugin's node_modules (`npm install` for authors; BB installs
 release packages with their declared production dependencies). A crashing slot collapses to a
 "plugin <id> crashed" chip without

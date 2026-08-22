@@ -38,6 +38,7 @@ const bridgeLaunchSchema = z.object({
     z.object({ kind: z.literal("daemon-bundled"), id: z.string() }),
   ]),
   providerOptions: jsonObjectSchema.default({}),
+  envPassthrough: z.array(z.string()).default([]),
   capabilities: z.object({
     experimental_providerInstallation: z.boolean().default(false),
     supportsServiceTier: z.boolean(),

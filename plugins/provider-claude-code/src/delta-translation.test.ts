@@ -1651,6 +1651,13 @@ describe("claude compaction", () => {
         item: {
           type: "contextCompaction",
           id: expect.stringMatching(ITEM_ID_PATTERN),
+          presentation: {
+            label: {
+              pending: "Compacting context",
+              completed: "Compacted context",
+            },
+            icon: { glyph: "Archive" },
+          },
         },
       }),
     );
@@ -1680,6 +1687,13 @@ describe("claude compaction", () => {
         item: {
           type: "contextCompaction",
           id: startedItem?.item.id,
+          presentation: {
+            label: {
+              pending: "Compacting context",
+              completed: "Compacted context",
+            },
+            icon: { glyph: "Archive" },
+          },
         },
       }),
     );

@@ -69,6 +69,7 @@ export function buildFollowUpSubmission({
 }: BuildFollowUpSubmissionArgs): FollowUpSubmission | null {
   if (intent === "steer") {
     const shortcut = buildFollowUpShortcutRequest({
+      execution,
       input,
       queuedMessages,
       threadId,

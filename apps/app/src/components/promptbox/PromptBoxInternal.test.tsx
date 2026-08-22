@@ -1541,89 +1541,126 @@ describe("PromptBoxInternal submit shortcuts", () => {
       restoreMatchMedia();
     }
   });
-
-  it("keeps hardware Enter as a newline in zen mode", async () => {
-    const restoreMatchMedia = mockPointerCoarse(true);
-    const restoreNavigator = mockIPadOSWebKit();
-    const storageKey = "bb.test.promptbox.zen-submit-shortcut";
-    window.localStorage.removeItem(storageKey);
-    try {
-      const onChange = vi.fn();
-      const onSubmit = vi.fn();
-      render(
-        <PromptBoxInternal
-          {...createPromptBoxProps({
-            value: "First line",
-            onChange,
-            onSubmit,
-            zenMode: { storageKey },
-          })}
-        />,
-      );
-      fireEvent.click(
-        screen.getByRole("button", { name: "Make prompt box larger" }),
-      );
-
-      fireEvent.keyDown(getPromptEditorElement(), {
-        key: "Enter",
-        code: "Enter",
-      });
-
-      expect(onSubmit).not.toHaveBeenCalled();
-      await waitFor(() =>
-        expect(onChange).toHaveBeenLastCalledWith("First line\n", []),
-      );
-    } finally {
-      window.localStorage.removeItem(storageKey);
-      restoreNavigator();
-      restoreMatchMedia();
-    }
-  });
 });
 
-describe("PromptBoxInternal zen mode layout", () => {
-  it("animates the prompt box height when toggling zen mode", async () => {
-    const storageKey = "bb.test.promptbox.zen-height-animation";
-    window.localStorage.removeItem(storageKey);
+describe("PromptBoxInternal escape", () => {
+  it("blurs the editor when no host Escape action is provided", async () => {
+    const promptBoxRef = createRef<PromptBoxHandle>();
+    render(
+      <PromptBoxInternal
+        {...createPromptBoxProps({ value: "Follow-up message" })}
+        promptBoxRef={promptBoxRef}
+      />,
+    );
+    await focusPromptEnd(promptBoxRef);
+    const editor = getPromptEditorElement();
 
+    const wasNotCanceled = fireEvent.keyDown(editor, { key: "Escape" });
+
+    expect(wasNotCanceled).toBe(false);
+    expect(document.activeElement).not.toBe(editor);
+  });
+
+  it("routes Escape to onEscape instead of blurring the editor", async () => {
+    const onEscape = vi.fn();
+    const promptBoxRef = createRef<PromptBoxHandle>();
+    render(
+      <PromptBoxInternal
+        {...createPromptBoxProps({ onEscape, value: "Edited message" })}
+        promptBoxRef={promptBoxRef}
+      />,
+    );
+    await focusPromptEnd(promptBoxRef);
+
+    const wasNotCanceled = fireEvent.keyDown(getPromptEditorElement(), {
+      key: "Escape",
+    });
+
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(wasNotCanceled).toBe(false);
+    // The cancel action owns what happens next; the editor must not also blur.
+    expect(document.activeElement).toBe(getPromptEditorElement());
+  });
+
+  it("dismisses an open typeahead before Escape reaches onEscape", async () => {
+    const onEscape = vi.fn();
+    const promptBoxRef = createRef<PromptBoxHandle>();
     render(
       <PromptBoxInternal
         {...createPromptBoxProps({
-          zenMode: { storageKey },
+          onEscape,
+          value: "/re",
+          typeahead: buildTypeaheadConfig({
+            commandSuggestions: [
+              {
+                kind: "command",
+                name: "review",
+                source: "command",
+                origin: "user",
+                description: null,
+                argumentHint: null,
+              },
+            ],
+          }),
+        })}
+        promptBoxRef={promptBoxRef}
+      />,
+    );
+    await focusPromptEnd(promptBoxRef);
+    await screen.findByRole("button", { name: "review" });
+
+    fireEvent.keyDown(getPromptEditorElement(), { key: "Escape" });
+
+    expect(onEscape).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "review" })).toBeNull(),
+    );
+
+    fireEvent.keyDown(getPromptEditorElement(), { key: "Escape" });
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PromptBoxInternal size controls", () => {
+  it.each([
+    ["thread", "calc(50dvh - 3rem)"],
+    ["root-compose", "calc(70dvh - 3rem)"],
+  ] as const)(
+    "caps the %s editor at its intended viewport height",
+    (layout, maxHeight) => {
+      render(
+        <PromptBoxInternal
+          {...createPromptBoxProps({ editorLayout: layout })}
+        />,
+      );
+
+      const editorScroll = document.querySelector<HTMLElement>(
+        "[data-promptbox-editor-scroll]",
+      );
+      expect(editorScroll?.style.maxHeight).toBe(maxHeight);
+    },
+  );
+
+  it("offers only the collapse action and releases editor focus", async () => {
+    const onCollapse = vi.fn();
+    render(
+      <PromptBoxInternal
+        {...createPromptBoxProps({
+          onCollapse,
         })}
       />,
     );
-
-    const form = document.querySelector("[data-promptbox]");
-    if (!(form instanceof HTMLFormElement)) {
-      throw new Error("Prompt box form was not rendered");
-    }
-
-    vi.spyOn(form, "getBoundingClientRect")
-      .mockReturnValueOnce(new DOMRect(0, 0, 320, 96))
-      .mockReturnValueOnce(new DOMRect(0, 0, 320, 512))
-      .mockReturnValue(new DOMRect(0, 0, 320, 512));
+    await waitForPromptFocus();
 
     expect(
-      screen.queryByRole("button", { name: "Make prompt box smaller" }),
+      screen.queryByRole("button", { name: /Make prompt box/u }),
     ).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: "Make prompt box larger" }),
+      screen.getByRole("button", { name: "Collapse prompt box" }),
     );
 
-    await waitFor(() => {
-      expect(form.style.transition).toContain("height 240ms");
-      expect(form.style.height).toBe("512px");
-    });
-    expect(
-      screen.getByRole("button", { name: "Make prompt box smaller" }),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole("button", { name: "Make prompt box larger" }),
-    ).toBeNull();
-
-    fireEvent.transitionEnd(form, { propertyName: "height" });
-    window.localStorage.removeItem(storageKey);
+    expect(onCollapse).toHaveBeenCalledOnce();
+    expect(document.activeElement).not.toBe(getPromptEditorElement());
   });
 });
 
@@ -2100,6 +2137,9 @@ describe("PromptBoxInternal compact layout", () => {
     ).toBeNull();
     expect(
       screen.queryByRole("button", { name: /Make prompt box/u }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Collapse prompt box" }),
     ).toBeNull();
     expect(getPromptEditorElement().getAttribute("data-placeholder")).toBe(
       "Ask a follow-up",
@@ -2720,70 +2760,7 @@ describe("PromptBoxInternal compact layout", () => {
     }
   });
 
-  it.each(["recording", "transcribing"] as const)(
-    "keeps zen sizing coherent while voice is %s",
-    async (state) => {
-      const storageKey = `bb.test.promptbox.voice-zen-${state}`;
-      window.localStorage.removeItem(storageKey);
-      const voice = {
-        state: "idle" as const,
-        isSupported: true,
-        stream: null,
-        start: vi.fn(),
-        stop: vi.fn(),
-        cancel: vi.fn(),
-      };
-      const view = render(
-        <PromptBoxInternal
-          {...createPromptBoxProps({
-            value: "Keep this zen prompt visible",
-            voice,
-            zenMode: { storageKey },
-          })}
-        />,
-      );
-
-      fireEvent.click(
-        screen.getByRole("button", { name: "Make prompt box larger" }),
-      );
-      await waitFor(() =>
-        expect(
-          document
-            .querySelector("[data-promptbox]")
-            ?.hasAttribute("data-promptbox-zen"),
-        ).toBe(true),
-      );
-
-      view.rerender(
-        <PromptBoxInternal
-          {...createPromptBoxProps({
-            value: "Keep this zen prompt visible",
-            voice: { ...voice, state },
-            zenMode: { storageKey },
-          })}
-        />,
-      );
-
-      const form = document.querySelector("[data-promptbox]");
-      const editorScroll = document.querySelector<HTMLElement>(
-        "[data-promptbox-editor-scroll]",
-      );
-      const actionRow = document.querySelector("[data-promptbox-action-row]");
-      const waveform = document.querySelector("canvas[aria-hidden]");
-      expect(form?.hasAttribute("data-promptbox-zen")).toBe(true);
-      expect(form?.classList.contains("h-[50dvh]")).toBe(true);
-      expect(editorScroll?.style.height).toBe("100%");
-      expect(editorScroll?.style.maxHeight).toBe("none");
-      expect(getPromptEditorElement().textContent).toBe(
-        "Keep this zen prompt visible",
-      );
-      expect(actionRow?.contains(waveform)).toBe(true);
-
-      window.localStorage.removeItem(storageKey);
-    },
-  );
-
-  it("does not expose zen controls in the full mobile layout", () => {
+  it("does not expose size controls in the full mobile layout", () => {
     render(
       <PromptBoxInternal
         {...createPromptBoxProps({
@@ -3077,6 +3054,14 @@ describe("PromptBoxInternal selection reveal", () => {
 });
 
 describe("PromptBoxInternal prompt actions", () => {
+  it("keeps the action row out of text selection while the editor stays selectable", () => {
+    renderPromptBox("");
+
+    const actionRow = document.querySelector("[data-promptbox-action-row]");
+    expect(actionRow?.classList.contains("select-none")).toBe(true);
+    expect(getPromptEditorElement().closest(".select-none")).toBeNull();
+  });
+
   it("keeps the custom caret reveal for composer-handled text pastes", async () => {
     const { changes, promptBoxRef } = renderPromptBox("");
 

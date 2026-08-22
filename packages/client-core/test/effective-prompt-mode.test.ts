@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  isClaudePlanModePrompt,
+  isPlanModePrompt,
   permissionDisplayForActivePromptMode,
   permissionDisplayForPromptMode,
   shouldDisablePermissionPickerForActivePromptMode,
@@ -20,28 +20,36 @@ const planCommandMention = {
   },
 } as const;
 
+const PLAN_MODE_COPY = "The agent will plan without normal full-access execution.";
+
 describe("permissionDisplayForPromptMode", () => {
-  it("shows plan mode for a Claude Code plan command pill", () => {
+  it("shows plan mode for a plan command pill on a provider that declares plan-mode copy", () => {
     expect(
       permissionDisplayForPromptMode({
-        providerId: "claude-code",
+        planModeCopy: PLAN_MODE_COPY,
         value: "/plan inspect the failing test",
         mentionRanges: [planCommandMention],
       }),
-    ).toMatchObject({ label: "Plan Mode", compactLabel: "Plan" });
+    ).toMatchObject({
+      label: "Plan Mode",
+      compactLabel: "Plan",
+      description: PLAN_MODE_COPY,
+    });
   });
 
-  it("does not show plan mode for plain text or other providers", () => {
+  it("does not show plan mode for plain text or a provider without plan-mode copy", () => {
     expect(
       permissionDisplayForPromptMode({
-        providerId: "claude-code",
+        planModeCopy: PLAN_MODE_COPY,
         value: "/plan inspect the failing test",
         mentionRanges: [],
       }),
     ).toBeUndefined();
+    // A provider with a plan action but no permission-changing plan mode
+    // (Codex) declares no copy, so its plan pill is not relabelled.
     expect(
       permissionDisplayForPromptMode({
-        providerId: "codex",
+        planModeCopy: undefined,
         value: "/plan inspect the failing test",
         mentionRanges: [planCommandMention],
       }),
@@ -50,49 +58,55 @@ describe("permissionDisplayForPromptMode", () => {
 });
 
 describe("permissionDisplayForActivePromptMode", () => {
-  it("shows Plan Mode while Claude Code is actively planning", () => {
+  it("shows Plan Mode while a copy-declaring provider is actively planning", () => {
     expect(
-      permissionDisplayForActivePromptMode({
-        mode: "plan",
-        providerId: "claude-code",
-        prompt: "inspect the failing test",
-      }),
+      permissionDisplayForActivePromptMode(
+        {
+          mode: "plan",
+          providerId: "claude-code",
+          prompt: "inspect the failing test",
+        },
+        PLAN_MODE_COPY,
+      ),
     ).toMatchObject({ label: "Plan Mode", compactLabel: "Plan" });
   });
 
-  it("does not relabel Codex plan mode as a permission mode", () => {
+  it("does not relabel plan mode as a permission mode without declared copy", () => {
     expect(
-      permissionDisplayForActivePromptMode({
-        mode: "plan",
-        providerId: "codex",
-        prompt: "inspect the failing test",
-      }),
+      permissionDisplayForActivePromptMode(
+        {
+          mode: "plan",
+          providerId: "codex",
+          prompt: "inspect the failing test",
+        },
+        undefined,
+      ),
     ).toBeUndefined();
   });
 });
 
-describe("isClaudePlanModePrompt", () => {
-  it("locks permissions for a Claude Code plan command pill", () => {
+describe("isPlanModePrompt", () => {
+  it("locks permissions for a plan command pill on a copy-declaring provider", () => {
     expect(
-      isClaudePlanModePrompt({
-        providerId: "claude-code",
+      isPlanModePrompt({
+        planModeCopy: PLAN_MODE_COPY,
         value: "/plan inspect the failing test",
         mentionRanges: [planCommandMention],
       }),
     ).toBe(true);
   });
 
-  it("does not lock permissions for plain text or other providers before submit", () => {
+  it("does not lock permissions for plain text or a provider without plan-mode copy", () => {
     expect(
-      isClaudePlanModePrompt({
-        providerId: "claude-code",
+      isPlanModePrompt({
+        planModeCopy: PLAN_MODE_COPY,
         value: "/plan inspect the failing test",
         mentionRanges: [],
       }),
     ).toBe(false);
     expect(
-      isClaudePlanModePrompt({
-        providerId: "codex",
+      isPlanModePrompt({
+        planModeCopy: undefined,
         value: "/plan inspect the failing test",
         mentionRanges: [planCommandMention],
       }),

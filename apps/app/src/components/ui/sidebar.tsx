@@ -912,7 +912,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">>(
             // The visibility leg hides the fully collapsed offcanvas panel
             // after the slide-out so its mounted rows stop painting (#1261);
             // the zero delay on expand shows it again immediately.
-            "fixed inset-y-0 z-10 flex h-(--bb-shell-height) w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground [transition:left_200ms_linear,right_200ms_linear,width_200ms_linear,visibility_0s_linear_0s]",
+            "fixed inset-y-0 z-10 flex h-(--bb-shell-height) w-(--sidebar-width) select-none flex-col bg-sidebar text-sidebar-foreground [transition:left_200ms_linear,right_200ms_linear,width_200ms_linear,visibility_0s_linear_0s]",
             "group-data-[collapsible=offcanvas]:invisible group-data-[collapsible=offcanvas]:[transition:left_200ms_linear,right_200ms_linear,width_200ms_linear,visibility_0s_linear_200ms]",
             "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]",
             "group-data-[collapsible=icon]:w-(--sidebar-width-icon) border-border-seam group-data-[side=left]:border-r group-data-[side=right]:border-l",
@@ -1519,7 +1519,7 @@ const SidebarMobilePanel = React.forwardRef<
             // initial containing block, so it reads the shell unit directly.
             // touch-pan-y hands horizontal touch moves to the drag-to-close
             // handler while leaving vertical list scrolling native.
-            "group fixed inset-y-0 z-40 flex h-(--bb-shell-height) w-(--sidebar-width-mobile) touch-pan-y flex-col bg-sidebar text-sidebar-foreground outline-none will-change-[translate]",
+            "group fixed inset-y-0 z-40 flex h-(--bb-shell-height) w-(--sidebar-width-mobile) touch-pan-y select-none flex-col bg-sidebar text-sidebar-foreground outline-none will-change-[translate]",
             SIDEBAR_MOBILE_PANEL_TRANSITION_CLASS,
             "left-0 data-[state=closed]:-translate-x-full",
             "border-border-seam data-[side=left]:border-r data-[side=right]:border-l",
@@ -1562,7 +1562,11 @@ const SidebarTrigger = React.forwardRef<
       data-sidebar="trigger"
       variant="ghost"
       size="icon"
-      className={cn(COARSE_POINTER_HEADER_ICON_BUTTON_CLASS, className)}
+      className={cn(
+        COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
+        "select-none",
+        className,
+      )}
       aria-expanded={ariaExpanded ?? (isCompactViewport ? openMobile : open)}
       onClick={(event) => {
         onClick?.(event);

@@ -12,18 +12,19 @@ import {
   type InteractionRequestParams,
 } from "@bb/provider-bridge-protocol";
 import {
-  createBridgeDeltaEventCollector,
-  type BridgeDeltaEventCollector,
-} from "@bb/agent-runtime/test/bridge-delta-assembly";
+  experimental_createBridgeDeltaEventCollector as createBridgeDeltaEventCollector,
+  experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
+  experimental_describeCalibrationEvents as describeCalibrationEvents,
+  experimental_normalizeCalibrationEvents as normalizeCalibrationEvents,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type {
+  BridgeDeltaEventCollector,
+  BridgeJsonRpcTestHarness,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
 import type { ServerNotification as CodexEvent } from "../generated/codex-app-server/schema/ServerNotification.js";
 import type { Turn } from "../generated/codex-app-server/schema/v2/Turn.js";
 import { handleLine } from "./bridge.js";
-import {
-  createBridgeJsonRpcTestHarness,
-  describeCalibrationEvents,
-  normalizeCalibrationEvents,
-} from "@bb/provider-bridge-protocol/testing";
-import type { BridgeJsonRpcTestHarness } from "@bb/provider-bridge-protocol/testing";
+
 /**
  * Codex scripted-session golden.
  *

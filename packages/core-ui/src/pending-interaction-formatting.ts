@@ -186,6 +186,16 @@ export function formatPendingInteractionSubjectDetailLines(
         ? [`Plan file: ${interaction.payload.subject.planFilePath}`]
         : [];
     }
+    case "tool_use": {
+      // Raised by the ACP bridge for generic tool permissions; WS5 designs the
+      // tool-use surface.
+      const { tool, presentation } = interaction.payload.subject;
+      return [
+        `Tool: ${tool}`,
+        ...(presentation.title ? [presentation.title] : []),
+        ...(presentation.detail ? [presentation.detail] : []),
+      ];
+    }
     default:
       return assertNever(interaction.payload.subject);
   }

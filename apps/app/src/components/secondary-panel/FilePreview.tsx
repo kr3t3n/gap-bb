@@ -1,5 +1,12 @@
-import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { UrlTransform } from "react-markdown";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@bb/shared-ui/button";
 import { SourceCodeHost } from "@/components/code/SourceCodeHost";
 import { COARSE_POINTER_TEXT_SM_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
@@ -20,6 +27,7 @@ import {
 } from "@bb/shared-ui/tooltip";
 import { TruncateStart } from "@/components/ui/truncate-start.js";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
+import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import type {
   FilePreviewLineRange,
   WorkspaceFilePreviewStatusLabel,
@@ -101,6 +109,7 @@ interface FilePreviewHeaderProps {
   path: string;
   copyPath: string | null;
   rawContents: string | null;
+  externalUrl: string | null;
   onOpenInEditor?: (path: string) => void;
   onRefresh?: () => void;
   isRefreshing: boolean;
@@ -179,6 +188,13 @@ type IframeLoadState = "loading" | "loaded" | "error";
 
 const CSV_PREVIEW_MAX_COLUMNS = 100;
 const CSV_PREVIEW_MAX_ROWS = 500;
+/**
+ * Every CSV body row is one truncated `leading-5` line with `py-1` and a
+ * bottom border, so this estimate is exact; `measureElement` still corrects
+ * it for zoom or font changes.
+ */
+const CSV_PREVIEW_ROW_HEIGHT_PX = 29;
+const CSV_PREVIEW_OVERSCAN_ROWS = 8;
 
 /**
  * Code previews above either budget render only a leading prefix until the
@@ -202,6 +218,28 @@ const FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS =
 // coarse-pointer tabs at 30px so the complete control fits the 36px header.
 const FILE_PREVIEW_VIEW_MODE_BUTTON_CLASS =
   "h-5 rounded-sm px-2 text-muted-foreground max-md:pointer-coarse:h-[30px]";
+
+// The rendered HTML previews (a plain iframe target, or the html kind whose
+// preview tab wraps one) are the only states with a page a browser can open on
+// its own. Everything else is text we render ourselves.
+function getFilePreviewExternalUrl(state: FilePreviewState): string | null {
+  if (state.kind === "iframe") {
+    return state.url;
+  }
+  if (state.kind === "html") {
+    return state.iframe.url;
+  }
+  return null;
+}
+
+// The preview URL is a same-origin app path; the external browser needs the
+// whole address.
+function toAbsolutePreviewUrl(url: string): string {
+  if (typeof window === "undefined") {
+    return url;
+  }
+  return new URL(url, window.location.href).toString();
+}
 
 function getFilePreviewToggleKind(
   state: FilePreviewState,
@@ -419,6 +457,7 @@ export function FilePreview({
   const toggleKind = getFilePreviewToggleKind(state);
   const filePreviewLineRange = getFilePreviewLineRange(state);
   const rawContents = getRawFilePreviewContents(state);
+  const externalUrl = getFilePreviewExternalUrl(state);
   const [viewMode, setViewMode] = useState<FilePreviewViewMode>(
     getInitialFilePreviewViewMode({
       lineRange: filePreviewLineRange,
@@ -489,6 +528,7 @@ export function FilePreview({
           path={path}
           copyPath={copyPath}
           rawContents={rawContents}
+          externalUrl={externalUrl}
           onOpenInEditor={onOpenInEditor}
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
@@ -596,6 +636,7 @@ function FilePreviewHeader({
   path,
   copyPath,
   rawContents,
+  externalUrl,
   onOpenInEditor,
   onRefresh,
   isRefreshing,
@@ -674,6 +715,35 @@ function FilePreviewHeader({
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
                   {copyFileContentsLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {externalUrl === null ? null : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                      "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                    )}
+                    onClick={() => {
+                      openUrlInExternalBrowser(
+                        toAbsolutePreviewUrl(externalUrl),
+                      );
+                    }}
+                    aria-label="Open in external browser"
+                  >
+                    {/* Globe, not ExternalLink: the neighbouring
+                        OpenInEditorButton already spends ExternalLink on a
+                        different destination. */}
+                    <Icon name="Globe" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Open in external browser
                 </TooltipContent>
               </Tooltip>
             )}
@@ -902,6 +972,28 @@ function CsvFilePreview({ file, onSelectionAddToChat }: CsvFilePreviewProps) {
   const tableWidth = `max(100%, ${3 + columns.length * 18}rem)`;
   const truncationNote = getCsvTruncationNote(preview, bodyRows.length);
 
+  // The parse cap still allows 500 x 100 = 50,000 cells, and a scroll box only
+  // clips painting, not DOM: mounting every row blocked the main thread for
+  // seconds and cost ~150k nodes (#1615). Mount only the rows near the
+  // viewport; spacer rows keep the table's natural height so the scrollbar,
+  // sticky header and sticky row-number gutter behave as before.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: bodyRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => CSV_PREVIEW_ROW_HEIGHT_PX,
+    overscan: CSV_PREVIEW_OVERSCAN_ROWS,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const totalRowsHeight = rowVirtualizer.getTotalSize();
+  const firstVirtualRow = virtualRows[0];
+  const lastVirtualRow = virtualRows[virtualRows.length - 1];
+  const spacerTopHeight = firstVirtualRow?.start ?? 0;
+  const spacerBottomHeight =
+    lastVirtualRow === undefined
+      ? totalRowsHeight
+      : totalRowsHeight - lastVirtualRow.end;
+
   return (
     <SecondaryPanelSelectionActions onSelectionAddToChat={onSelectionAddToChat}>
       {/* Single scroll container for both axes: the sticky header row and
@@ -912,7 +1004,10 @@ function CsvFilePreview({ file, onSelectionAddToChat }: CsvFilePreviewProps) {
         {/* overscroll-contain: panning a wide table past its edge must not
             chain into the browser back/forward gesture (kept alive globally —
             see app.css overscroll notes) or scroll an ancestor. */}
-        <div className="persistent-scrollbar min-h-0 overflow-auto overscroll-contain rounded-md border border-border bg-background">
+        <div
+          ref={scrollRef}
+          className="persistent-scrollbar min-h-0 overflow-auto overscroll-contain rounded-md border border-border bg-background"
+        >
           <table
             className="min-w-full table-fixed border-separate border-spacing-0 font-mono text-xs leading-5"
             aria-label={`${file.name} CSV preview`}
@@ -947,30 +1042,48 @@ function CsvFilePreview({ file, onSelectionAddToChat }: CsvFilePreviewProps) {
               </tr>
             </thead>
             <tbody>
-              {bodyRows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  <th
-                    scope="row"
-                    className="sticky left-0 z-10 w-12 min-w-12 border-b border-r border-border bg-surface-recessed-solid px-2 py-1 text-right font-medium text-muted-foreground"
-                  >
-                    {rowIndex + 2}
-                  </th>
-                  {columns.map((column) => {
-                    const cell = row[column.index] ?? "";
-                    return (
-                      <td
-                        key={column.index}
-                        className="w-72 max-w-72 overflow-hidden border-b border-r border-border px-2 py-1 align-top text-foreground"
-                        title={cell}
-                      >
-                        <span className="block max-w-full truncate">
-                          {cell}
-                        </span>
-                      </td>
-                    );
-                  })}
+              {spacerTopHeight > 0 ? (
+                <tr aria-hidden style={{ height: spacerTopHeight }}>
+                  <td colSpan={columns.length + 1} className="p-0" />
                 </tr>
-              ))}
+              ) : null}
+              {virtualRows.map((virtualRow) => {
+                const rowIndex = virtualRow.index;
+                const row = bodyRows[rowIndex] ?? [];
+                return (
+                  <tr
+                    key={virtualRow.key}
+                    data-index={rowIndex}
+                    ref={rowVirtualizer.measureElement}
+                  >
+                    <th
+                      scope="row"
+                      className="sticky left-0 z-10 w-12 min-w-12 border-b border-r border-border bg-surface-recessed-solid px-2 py-1 text-right font-medium text-muted-foreground"
+                    >
+                      {rowIndex + 2}
+                    </th>
+                    {columns.map((column) => {
+                      const cell = row[column.index] ?? "";
+                      return (
+                        <td
+                          key={column.index}
+                          className="w-72 max-w-72 overflow-hidden border-b border-r border-border px-2 py-1 align-top text-foreground"
+                          title={cell}
+                        >
+                          <span className="block max-w-full truncate">
+                            {cell}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+              {spacerBottomHeight > 0 ? (
+                <tr aria-hidden style={{ height: spacerBottomHeight }}>
+                  <td colSpan={columns.length + 1} className="p-0" />
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>

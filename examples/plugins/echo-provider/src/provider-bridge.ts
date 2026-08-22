@@ -15,7 +15,8 @@
  *   the bridge stays alive. The dispatch table is keyed by the protocol
  *   package's own method vocabulary, so it cannot drift from the schemas.
  * - Handshake: initialize answers protocol version 2 — the narrow-grammar
- *   dialect. The runtime rejects any other version at spawn.
+ *   dialect — and grammar range [3, 3]. The runtime rejects any other
+ *   protocol version, or a grammar range without 3, at spawn.
  * - Grammar: the bridge emits `thread/delta` semantic deltas, never finished
  *   timeline events — the runtime's assembler mints every turn and item id
  *   and constructs the canonical events. Every accepted turn settles
@@ -32,6 +33,7 @@ import {
   BRIDGE_NOTIFICATION_METHODS,
   BRIDGE_REQUEST_METHODS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   initializeParamsSchema,
   modelListParamsSchema,
@@ -100,8 +102,9 @@ function emitDeltas(threadId: string, deltas: ThreadDelta[]): void {
 
 function promptText(input: readonly PromptInput[]): string {
   return input
-    .filter((item): item is Extract<PromptInput, { type: "text" }> =>
-      item.type === "text",
+    .filter(
+      (item): item is Extract<PromptInput, { type: "text" }> =>
+        item.type === "text",
     )
     .map((item) => item.text)
     .join("");
@@ -125,11 +128,22 @@ function runEchoTurn(args: {
   }
   deltas.push(
     { kind: "turn.open" },
-    // A streamed assistant message: the assembler synthesizes item/started
-    // for the delta-first stream, and the close's `text` is the provider's
-    // final text for the completed item.
-    { kind: "message.delta", channel: "assistant", streamKey: "echo", text },
-    { kind: "message.close", channel: "assistant", streamKey: "echo", text },
+    // A streamed assistant message on an anonymous stream (the echo agent
+    // names no item ids, so the key is a bridge-chosen channel): the
+    // assembler synthesizes item/started for the delta-first stream, and the
+    // close's `text` is the provider's final text for the completed item.
+    {
+      kind: "item.textDelta",
+      key: { channel: "echo" },
+      channel: "agentMessage",
+      text,
+    },
+    {
+      kind: "item.textClose",
+      key: { channel: "echo" },
+      channel: "agentMessage",
+      text,
+    },
     { kind: "turn.boundary", status: "completed" },
   );
   emitDeltas(args.threadId, deltas);
@@ -174,12 +188,16 @@ const handlers: Record<string, RequestHandler> = {
       invalidParams(id, BRIDGE_REQUEST_METHODS.initialize, parsed.error.issues);
       return;
     }
-    // All capabilities absent: sessionRestore, threadArchive, threadRename
+    // Session capabilities absent: sessionRestore, threadArchive, threadRename
     // and threadGoalClear read false and fork reads "none", so the runtime
-    // will never send this bridge a capability-gated method.
+    // will never send this bridge a capability-gated method. The grammar
+    // range is stated: the runtime assembles grammar v3 only, and a bridge
+    // that says nothing reads as v2 and is refused at the handshake.
     respondResult(id, {
       protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
-      capabilities: {},
+      capabilities: {
+        grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+      },
     });
   },
 

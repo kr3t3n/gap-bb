@@ -51,7 +51,10 @@ import {
 import { parsePluginSource } from "./install-sources.js";
 import { readPluginManifest, type PluginManifest } from "./manifest.js";
 import { buildPluginProviderRegistration } from "../providers/plugin-provider-registration.js";
-import { reservedProviderIdProblem } from "../providers/provider-registry.js";
+import type { ProviderInstallRank } from "../providers/provider-registry.js";
+import { BUNDLED_PLUGINS } from "./builtin-registry.js";
+import { readPluginSettingsValuesSync } from "./plugin-settings.js";
+import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
 import {
   isPluginSdkRangeSatisfied,
   pluginSdkRangeProblem,
@@ -317,6 +320,12 @@ const DEV_BUILD_PROBLEM_LABELS: Record<PluginDevBuildKind, string> = {
   frontend: "frontend bundle build failed",
   host: "host bundle build failed",
 };
+
+/**
+ * Suffix on a reload problem when the new sources did not load and the
+ * previous instance keeps serving (status stays "running").
+ */
+const PREVIOUS_INSTANCE_KEPT = "the previous instance is still running";
 
 const DEFAULT_LOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_SERVICE_STOP_TIMEOUT_MS = 5_000;
@@ -1276,10 +1285,28 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     for (const registration of registrations) registration.dispose();
   }
 
+  /**
+   * Where this plugin sits in install order: bundled plugins rank by their
+   * bundled position (they install first, at bootstrap), everything else by
+   * install time. This is the provider picker's order absent a user setting.
+   */
+  function providerInstallRank(row: InstalledPluginRow): ProviderInstallRank {
+    const name = row.sourceKind === "builtin" ? row.sourceBuiltinName : null;
+    const bundledIndex =
+      name === null
+        ? -1
+        : BUNDLED_PLUGINS.findIndex((plugin) => plugin.name === name);
+    return {
+      bundledIndex: bundledIndex === -1 ? null : bundledIndex,
+      installedAt: row.installedAt,
+    };
+  }
+
   function registerPluginProvider(args: {
     available: boolean;
     declaration: PluginProviderDeclaration;
     row: InstalledPluginRow;
+    settingsDescriptors: PluginSettingDescriptors;
   }): { dispose(): void } {
     if (!deps.providerRegistry) {
       throw new Error("the provider registry is unavailable in this host");
@@ -1293,15 +1320,23 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         available: args.available,
         pluginId: args.row.id,
         declaration: args.declaration,
+        readSettings: () =>
+          readPluginSettingsValuesSync({
+            db: deps.db,
+            pluginId: args.row.id,
+            descriptors: args.settingsDescriptors,
+          }),
       }),
       ...(icon === null ? {} : { icon }),
       pluginId: args.row.id,
+      installRank: providerInstallRank(args.row),
     });
   }
 
   function replaceUnavailableProviderRegistrations(
     row: InstalledPluginRow,
     declarations: readonly PluginProviderDeclaration[],
+    settingsDescriptors: PluginSettingDescriptors,
   ): void {
     disposeUnavailableProviderRegistrations(row.id);
     const registrations: Array<{ dispose(): void }> = [];
@@ -1312,6 +1347,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
             available: false,
             declaration,
             row,
+            settingsDescriptors,
           }),
         );
       }
@@ -1324,19 +1360,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     }
   }
 
-  async function loadOne(row: InstalledPluginRow): Promise<void> {
+  function hungServicesDetail(hung: ReadonlySet<string>): string {
+    return `service ${[...hung].join(", ")} did not stop`;
+  }
+
+  /**
+   * Load `row`'s current sources. Resolves null when they are now the running
+   * instance (or the plugin stays disabled by the user's switch), else the
+   * reason they are not: a failed first load, a failed reload that kept the
+   * previous instance serving, or a hung service that blocks the load. The
+   * status is recorded either way; the return value lets the caller that
+   * asked for this load (`bb plugin reload`) report the outcome instead of
+   * success (#2029).
+   */
+  async function loadOne(row: InstalledPluginRow): Promise<string | null> {
     // Refresh identity first so even a disabled/incompatible/errored plugin
     // keeps its name, icon, and logo in the list.
     await populateIdentity(row);
     if (!row.enabled) {
       setStatus(row.id, "disabled");
-      return;
+      return null;
     }
     const previous = loaded.get(row.id);
     function failBeforeFactory(
       status: PluginRuntimeStatus,
       detail: string,
-    ): void {
+    ): string {
       // Every non-running outcome must leave a log line: without one, an
       // engines mismatch after a host upgrade leaves the plugin gone with
       // no trace outside the in-memory status (#1915).
@@ -1345,49 +1394,46 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         logger.warn(
           `plugin ${row.id} reload failed (kept previous instance): ${detail}`,
         );
-      } else {
-        setStatus(row.id, status, detail);
-        logger.warn(`plugin ${row.id} not loaded (${status}): ${detail}`);
+        return `${detail} (${PREVIOUS_INSTANCE_KEPT})`;
       }
+      setStatus(row.id, status, detail);
+      logger.warn(`plugin ${row.id} not loaded (${status}): ${detail}`);
+      return detail;
     }
     const hung = hungServices.get(row.id);
     if (hung !== undefined && hung.size > 0) {
       // A previous instance's service never stopped; loading now would
       // double-start it (design §3: degraded rather than double-starting).
-      const detail = `service ${[...hung].join(", ")} did not stop`;
+      const detail = hungServicesDetail(hung);
       setStatus(row.id, "degraded", detail);
       logger.warn(`plugin ${row.id} not loaded (degraded): ${detail}`);
-      return;
+      return detail;
     }
     try {
       await stat(row.rootDir);
     } catch {
-      failBeforeFactory(
+      return failBeforeFactory(
         "missing",
         `plugin directory not found: ${row.rootDir} (reinstall)`,
       );
-      return;
     }
     let manifest: PluginManifest;
     try {
       manifest = await readPluginManifest(row.rootDir);
     } catch (error) {
-      failBeforeFactory(
+      return failBeforeFactory(
         "error",
         error instanceof Error ? error.message : String(error),
       );
-      return;
     }
     const engineProblem =
       checkEngineRange(manifest) ?? checkPluginSdkRange(manifest);
     if (engineProblem) {
-      failBeforeFactory("incompatible", engineProblem);
-      return;
+      return failBeforeFactory("incompatible", engineProblem);
     }
     const artifactProblem = await packagedBuiltinArtifactProblem(row, manifest);
     if (artifactProblem !== null) {
-      failBeforeFactory("incompatible", artifactProblem);
-      return;
+      return failBeforeFactory("incompatible", artifactProblem);
     }
     // Build candidate assets without publishing them; a failed reload keeps
     // the previous backend and frontend registration sets together.
@@ -1400,8 +1446,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       hostArtifactProblem =
         error instanceof Error ? error.message : String(error);
       if (previous !== undefined) {
-        failBeforeFactory("error", hostArtifactProblem);
-        return;
+        return failBeforeFactory("error", hostArtifactProblem);
       }
     }
     // Branding refresh rides every load too, so `bb plugin reload` picks up a
@@ -1410,6 +1455,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       row.id,
       manifest,
     );
+    const settingsDescriptorsRef: { current: PluginSettingDescriptors } = {
+      current: {},
+    };
     const handle = createPluginApi({
       pluginId: row.id,
       logger: deps.logger,
@@ -1487,19 +1535,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           available: true,
           declaration,
           row,
+          // Bound once the handle exists (below); registrations only flush
+          // at activate(), after the factory — and therefore after
+          // `bb.settings.define` — has run.
+          settingsDescriptors: settingsDescriptorsRef.current,
         });
       },
       assertProviderRegistrable: (providerId) => {
-        // Reserved first-party ids, checked at call time so a staged
-        // registration fails the factory (the registry enforces the same rule
-        // for live registrations).
-        const reserved = reservedProviderIdProblem({
-          pluginId: row.id,
-          providerId,
-        });
-        if (reserved !== null) {
-          throw new Error(reserved);
-        }
         // A declaration is metadata; the implementation is the bridge this
         // plugin declares in its manifest (or, for pi, the bridge the daemon
         // bundles). A failed artifact build still stages the declaration so
@@ -1526,6 +1568,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         return existing !== null && existing.source.pluginId !== row.id;
       },
     });
+    // `settings.define` mutates this record in place, so binding the
+    // reference once is enough for later per-command reads.
+    settingsDescriptorsRef.current = handle.settings.descriptors;
     // Mutable trees are edited between loads, so invalidate the previous
     // generation's URLs before importing (managed git:/npm: artifacts are
     // immutable after promotion and keep their cached modules).
@@ -1585,7 +1630,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       logger.warn(
         `plugin ${row.id} failed to load: ${statuses.get(row.id)?.detail}`,
       );
-      return;
+      return previous !== undefined
+        ? `${message} (${PREVIOUS_INSTANCE_KEPT})`
+        : message;
     }
     if (hostArtifactProblem !== null) {
       rollbackGeneration?.();
@@ -1593,6 +1640,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         replaceUnavailableProviderRegistrations(
           row,
           handle.listProviderDeclarations(),
+          handle.settings.descriptors,
         );
       } catch (error) {
         hostArtifactProblem += `; failed to retain provider declaration: ${
@@ -1609,7 +1657,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       handle.invalidate();
       setStatus(row.id, "error", hostArtifactProblem);
       logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
-      return;
+      return hostArtifactProblem;
     }
     const plugin: LoadedPlugin = {
       manifest,
@@ -1627,7 +1675,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     };
     if (previous !== undefined) {
       await disposePluginInstance(row.id, previous);
-      if ((hungServices.get(row.id)?.size ?? 0) > 0) {
+      const hungAfterDispose = hungServices.get(row.id);
+      if (hungAfterDispose !== undefined && hungAfterDispose.size > 0) {
         loaded.delete(row.id);
         deps.sharedPorts?.clearDeclarationsForOwner(row.id);
         for (const database of handle.databaseHandles.splice(0)) {
@@ -1638,7 +1687,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           }
         }
         handle.invalidate();
-        return;
+        return hungServicesDetail(hungAfterDispose);
       }
     }
     // One map replacement is the registration commit point. Until this line,
@@ -1689,6 +1738,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       );
     }
     logger.info(`plugin ${row.id}@${manifest.version} loaded`);
+    return null;
   }
 
   async function disposePluginInstance(

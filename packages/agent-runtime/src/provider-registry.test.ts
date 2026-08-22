@@ -35,6 +35,7 @@ const ACP_BRIDGE_LAUNCH: AgentRuntimeBridgeLaunch = {
       env: {},
     },
   },
+  envPassthrough: [],
   capabilities: {
     experimental_providerInstallation: false,
     supportsServiceTier: true,
@@ -52,6 +53,7 @@ const PI_BRIDGE_LAUNCH: AgentRuntimeBridgeLaunch = {
   dataDir: "/data/plugins/provider-fixture/bridge-data",
   source: { kind: "daemon-bundled", id: "pi" },
   providerOptions: {},
+  envPassthrough: [],
   capabilities: {
     experimental_providerInstallation: false,
     supportsServiceTier: false,
@@ -108,7 +110,7 @@ describe("provider registry", () => {
       threadId: "thread-1",
       cwd: "/workspace",
       options: {
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -233,7 +235,7 @@ describe("provider registry", () => {
       threadId: "thread-1",
       cwd: "/workspace",
       options: {
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -281,7 +283,7 @@ describe("provider registry", () => {
       threadId: "thread-1",
       cwd: "/workspace",
       options: {
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -333,6 +335,7 @@ describe("provider registry", () => {
         pluginId: "provider-fixture",
         dataDir: "/data/plugins/provider-fixture/bridge-data",
         providerOptions: {},
+        envPassthrough: [],
         source: {
           kind: "artifact",
           digest: "a".repeat(64),
@@ -368,6 +371,7 @@ describe("provider registry", () => {
         pluginId: "provider-fixture",
         dataDir: "/data/plugins/provider-fixture/bridge-data",
         providerOptions: {},
+        envPassthrough: [],
         source: {
           kind: "artifact",
           digest: "b".repeat(64),
@@ -397,7 +401,7 @@ describe("provider registry", () => {
       threadId: "thread-1",
       cwd: "/workspace",
       options: {
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -433,6 +437,7 @@ describe("provider registry", () => {
           artifactPath: "/data/provider-bridges/artifact.mjs",
         },
         providerOptions: {},
+        envPassthrough: [],
         capabilities: {
           experimental_providerInstallation: false,
           supportsServiceTier: false,
@@ -466,6 +471,7 @@ describe("provider registry", () => {
           artifactPath: "/data/provider-bridges/graduated-pi.mjs",
         },
         providerOptions: {},
+        envPassthrough: [],
         capabilities: PI_BRIDGE_LAUNCH.capabilities,
       },
     });
@@ -483,6 +489,7 @@ describe("provider registry", () => {
           pluginId: "provider-fixture",
           dataDir: "/data/plugins/provider-fixture/bridge-data",
           providerOptions: {},
+          envPassthrough: [],
           source: { kind: "daemon-bundled", id: "not-bundled" },
           capabilities: PI_BRIDGE_LAUNCH.capabilities,
         },
@@ -505,6 +512,7 @@ describe("provider registry", () => {
           artifactPath: "/data/provider-bridges/artifact.mjs",
         },
         providerOptions: {},
+        envPassthrough: [],
         capabilities: {
           experimental_providerInstallation: false,
           supportsServiceTier: true,

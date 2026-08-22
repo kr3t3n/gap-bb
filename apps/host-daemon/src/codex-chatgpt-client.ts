@@ -453,18 +453,42 @@ function extractProviderErrorMessage(rawText: string): string | null {
   }
 }
 
+function isHtmlResponse(response: Response): boolean {
+  return (
+    response.headers
+      .get("content-type")
+      ?.toLowerCase()
+      .startsWith("text/html") ?? false
+  );
+}
+
+const CODEX_API_KEY_ROUTE_HINT: Record<CodexRequestOperation, string> = {
+  inference: "BB_INFERENCE",
+  transcription: "BB_TRANSCRIPTION",
+};
+
 async function createCodexHttpError({
   deadline,
   operation,
   response,
 }: CodexHttpErrorArgs): Promise<ExpectedCommandDispatchError> {
-  const providerMessage = extractProviderErrorMessage(
-    await readErrorText(response, deadline),
-  );
+  const prefix = `Codex ${operation} request failed with HTTP ${response.status}`;
+  if (isCloudflareChallenge(response)) {
+    // Cloudflare bot management decides per network and per request whether
+    // to challenge; a Node client cannot solve the JavaScript challenge, so
+    // the failure is transient and the HTML page is not a useful message.
+    return new ExpectedCommandDispatchError(
+      "codex_service_unavailable",
+      `${prefix}: chatgpt.com answered with a Cloudflare challenge that bb cannot solve. Retry, or set ${CODEX_API_KEY_ROUTE_HINT[operation]} to an openai/ model with OPENAI_API_KEY.`,
+    );
+  }
+  const providerMessage = isHtmlResponse(response)
+    ? null
+    : extractProviderErrorMessage(await readErrorText(response, deadline));
   const details = providerMessage ? `: ${providerMessage}` : "";
   return new ExpectedCommandDispatchError(
     codexRequestErrorCode(response.status),
-    `Codex ${operation} request failed with HTTP ${response.status}${details}`,
+    `${prefix}${details}`,
   );
 }
 

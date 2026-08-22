@@ -38,6 +38,7 @@ const presetExecutionSchema = z
       "max",
       "ultra",
     ]),
+    serviceTier: z.enum(["default", "fast"]).nullable(),
     permissionMode: presetPermissionModeSchema,
   })
   .strict();
@@ -316,6 +317,7 @@ export function handlers(
         providerId: preset.providerId,
         model: preset.modelId,
         reasoningLevel: preset.reasoningLevel,
+        serviceTier: preset.serviceTier,
         permissionMode: preset.permissionMode,
       });
       const prompt = buildSeedPrompt({
@@ -336,6 +338,9 @@ export function handlers(
           providerId: execution.providerId,
           model: execution.model,
           reasoningLevel: execution.reasoningLevel,
+          ...(execution.serviceTier === null
+            ? {}
+            : { serviceTier: execution.serviceTier }),
           permissionMode: execution.permissionMode,
           title,
           prompt,
@@ -410,6 +415,24 @@ export function handlers(
       publishThreadsChanged(bb, task.id);
       publishTasksChanged(bb, task.id, task.projectId);
       return { threadId: thread.id };
+    },
+
+    async taskThreadsDetach(input) {
+      const task = requireTask(store.tasks, input.taskId);
+      const taskThread = store.tasks.getTaskThreadByThreadId(
+        task.id,
+        input.threadId,
+      );
+      if (!taskThread) {
+        throw new Error(
+          `Thread ${input.threadId} is not attached to ${task.key}`,
+        );
+      }
+      store.tasks.deleteTaskThread(taskThread.id);
+
+      publishThreadsChanged(bb, task.id);
+      publishTasksChanged(bb, task.id, task.projectId);
+      return { threadId: taskThread.threadId };
     },
   };
 }

@@ -20,3 +20,20 @@
  *   `thread/event`.
  */
 export const PROVIDER_BRIDGE_PROTOCOL_VERSION = 2 as const;
+
+/**
+ * The `thread/delta` grammar versions. The grammar is versioned separately
+ * from the JSON-RPC envelope (see `grammarVersions` in handshake.ts): v2 was
+ * the narrow grammar that shipped with protocol version 2; v3 adds the core
+ * item kinds `fileRead`, `search`, `delegation` and `planSteps`, declarative
+ * `presentation` on `item.open`/`item.close`, plugin extension kinds
+ * (`extension` items, `extension.state`), and replaces v2's two streaming
+ * dialects and two usage dialects with one of each (`item.textDelta`/
+ * `item.textClose`, `usage` + `contextWindow`). A bridge reports the range
+ * it speaks; the runtime reports the range its assembler accepts; both emit
+ * the highest common version. The runtime's assembler speaks v3 only; a
+ * bridge that predates `grammarVersions` reads as `[2, 2]` and is refused at
+ * the handshake.
+ */
+export const THREAD_DELTA_GRAMMAR_V2 = PROVIDER_BRIDGE_PROTOCOL_VERSION;
+export const THREAD_DELTA_GRAMMAR_V3 = 3 as const;

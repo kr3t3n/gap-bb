@@ -553,6 +553,7 @@ function EmbeddedThreadChatWithComposer({
         id: threadId,
         input: submittedInput,
         mode: "steer-if-active",
+        ...executionRequestFields,
       })
       .catch((error) => {
         if (!isMountedRef.current) {
@@ -576,6 +577,7 @@ function EmbeddedThreadChatWithComposer({
     canSubmitModifierShortcut,
     currentPromptDraft,
     currentPromptDraftInput,
+    executionRequestFields,
     handleSendQueuedImmediately,
     labels.sendError,
     promptDraft,
@@ -1041,7 +1043,7 @@ function EmbeddedThreadChatWithComposer({
           permissionReadOnly
           typeahead={typeaheadConfig}
           promptActions={promptActions}
-          zenModeResetKey={`${surfaceKey}:queued-message:${inlineEditingQueuedMessage.queuedMessageId}`}
+          collapseResetKey={`${surfaceKey}:queued-message:${inlineEditingQueuedMessage.queuedMessageId}`}
           focusEndKey={`${inlineEditingQueuedMessage.editSessionId}:${inlineComposerFocusNonce}`}
           isPrimaryComposer={false}
           showScrollToBottomButton={false}
@@ -1130,7 +1132,7 @@ function EmbeddedThreadChatWithComposer({
             permissionReadOnly={composer.permissionPolicy === "snapshot"}
             typeahead={typeaheadConfig}
             promptActions={promptActions}
-            zenModeResetKey={surfaceKey}
+            collapseResetKey={surfaceKey}
             focusEndKey={
               // Composite only when an external nonce is supplied, so existing
               // consumers keep the plain internal-nonce key.

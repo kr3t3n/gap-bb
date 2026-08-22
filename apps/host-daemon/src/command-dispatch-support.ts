@@ -170,6 +170,7 @@ export async function resolveRuntimeBridgeLaunch(
     permissionModes: [...bridgeLaunch.capabilities.permissionModes],
   };
   const providerOptions = { ...bridgeLaunch.providerOptions };
+  const envPassthrough = [...bridgeLaunch.envPassthrough];
   // Every bridge, artifact or bundled, is scoped to the plugin that ships it:
   // it gets that plugin's own persistent directory, the same one the plugin's
   // host worker would get, under its own `bridge-data` kind.
@@ -185,6 +186,7 @@ export async function resolveRuntimeBridgeLaunch(
       source: { ...bridgeLaunch.source },
       capabilities,
       providerOptions,
+      envPassthrough,
     };
   }
   if (options.fetchPluginHostArtifact === undefined) {
@@ -211,6 +213,7 @@ export async function resolveRuntimeBridgeLaunch(
     },
     capabilities,
     providerOptions,
+    envPassthrough,
   };
 }
 

@@ -8,7 +8,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
   createDeltaAssembler,
   type DeltaAssembler,
-} from "../delta-assembler.js";
+} from "@bb/provider-bridge-protocol/assembler";
 import {
   createPiDeltaTranslator,
   type PiModelContextWindowResolver,
@@ -76,6 +76,29 @@ function createHarness(options?: {
     openTurnId() {
       return assembler.getOpenTurnId(THREAD_ID) ?? "";
     },
+  };
+}
+
+function sdkMessage(message: unknown) {
+  return {
+    jsonrpc: "2.0" as const,
+    method: "sdk/message",
+    params: { threadId: "pi-thread-1", message },
+  };
+}
+
+/** Pi's `CustomMessage`: what an extension's `pi.sendMessage` injects. */
+function createPiCustomMessage(args: {
+  content: string | Array<Record<string, unknown>>;
+  display?: boolean;
+}) {
+  return {
+    role: "custom",
+    customType: "ad-process:notification",
+    content: args.content,
+    display: args.display ?? true,
+    details: { attention: "turn", kind: "success", processId: "proc_551c" },
+    timestamp: 1_786_919_243_630,
   };
 }
 
@@ -267,6 +290,109 @@ describe("pi delta translation equivalence", () => {
     expect(events.some((event) => event.type === "provider/unhandled")).toBe(
       false,
     );
+  });
+
+  it("records a displayed Pi custom message as the input of the turn it triggered", () => {
+    // The order Pi emits for an idle `sendMessage(..., { triggerTurn: true })`:
+    // agent_start opens the run, then the custom message's own boundaries.
+    const harness = createHarness();
+    harness.translate(sdkMessage(loadFixture("agent-start.json")));
+    const turnId = harness.openTurnId();
+    const message = createPiCustomMessage({
+      content:
+        '<process_event kind="success" process_id="proc_551c">Process completed successfully</process_event>',
+    });
+
+    const startEvents = harness.translate(
+      sdkMessage({ type: "message_start", message }),
+    );
+    const endEvents = harness.translate(
+      sdkMessage({ type: "message_end", message }),
+    );
+
+    expect(startEvents).toEqual([
+      {
+        type: "item/completed",
+        threadId: "",
+        providerThreadId: "",
+        scope: turnScope(turnId),
+        item: {
+          type: "userMessage",
+          id: expect.stringMatching(ITEM_ID_PATTERN),
+          content: [
+            {
+              type: "text",
+              text: '<process_event kind="success" process_id="proc_551c">Process completed successfully</process_event>',
+            },
+          ],
+        },
+      },
+    ]);
+    expect(endEvents).toEqual([]);
+    expect(harness.openTurnId()).toBe(turnId);
+  });
+
+  it("joins the text blocks of an array-content Pi custom message", () => {
+    const harness = createHarness();
+    harness.translate(sdkMessage(loadFixture("agent-start.json")));
+
+    const events = harness.translate(
+      sdkMessage({
+        type: "message_start",
+        message: createPiCustomMessage({
+          content: [
+            { type: "text", text: "first" },
+            { type: "image", data: "AAAA", mimeType: "image/png" },
+            { type: "text", text: "second" },
+          ],
+        }),
+      }),
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "userMessage",
+          content: [{ type: "text", text: "first\nsecond" }],
+        }),
+      }),
+    ]);
+  });
+
+  it("drops hidden and idle Pi custom messages without surfacing them as unhandled", () => {
+    const harness = createHarness();
+
+    // Idle `attention: context` notes: Pi appends them without running the
+    // agent, so there is no bb turn to record them in.
+    const idleMessage = createPiCustomMessage({ content: "idle context note" });
+    expect(
+      harness.translate(
+        sdkMessage({ type: "message_start", message: idleMessage }),
+      ),
+    ).toEqual([]);
+    expect(
+      harness.translate(
+        sdkMessage({ type: "message_end", message: idleMessage }),
+      ),
+    ).toEqual([]);
+    expect(harness.openTurnId()).toBe("");
+
+    harness.translate(sdkMessage(loadFixture("agent-start.json")));
+    const hiddenMessage = createPiCustomMessage({
+      content: "hidden",
+      display: false,
+    });
+    expect(
+      harness.translate(
+        sdkMessage({ type: "message_start", message: hiddenMessage }),
+      ),
+    ).toEqual([]);
+    expect(
+      harness.translate(
+        sdkMessage({ type: "message_end", message: hiddenMessage }),
+      ),
+    ).toEqual([]);
   });
 
   it("agent_end surfaces Pi assistant stop errors as failed turns", () => {
@@ -755,8 +881,7 @@ describe("pi delta translation equivalence", () => {
 
     const started = events.find(
       (event) =>
-        event.type === "item/started" &&
-        event.item.type === "commandExecution",
+        event.type === "item/started" && event.item.type === "commandExecution",
     );
     if (started?.type !== "item/started") {
       throw new Error("expected a commandExecution item/started");

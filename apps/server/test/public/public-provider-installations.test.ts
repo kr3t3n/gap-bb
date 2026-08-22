@@ -47,12 +47,12 @@ function registerInstallationProviders(
             supportsManualCompaction: false,
             supportsThreadArchive: false,
             supportsThreadRename: false,
-            supportsWorkflows: false,
             permissionModes: ["full"],
             reasoningLevels: ["medium"],
           },
           composerActions: [],
         }),
+        readSettings: () => ({}),
       }),
       pluginId,
     });

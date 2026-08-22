@@ -4,6 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InlineQueuedMessageEditState } from "./useInlineQueuedMessageEditing";
 import type { PromptDraftAttachment } from "@bb/client-core";
+import { BbHttpError } from "@bb/sdk/browser";
 import { createDeferredPromise } from "@bb/test-helpers";
 import {
   useComposerAttachmentUploads,
@@ -144,6 +145,38 @@ describe("useComposerAttachmentUploads", () => {
     expect(result.current.isAttachingInlineFiles).toBe(false);
     expect(result.current.inlineAttachmentError).toBeNull();
     expect(commitInlineQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's reason when it refuses an upload", async () => {
+    const message =
+      "HEIC images are not supported. Convert the image to JPEG or PNG before attaching it.";
+    mocks.upload
+      .mockRejectedValueOnce(
+        new BbHttpError({
+          body: { code: "invalid_request", message },
+          code: "invalid_request",
+          message,
+          status: 400,
+        }),
+      )
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { result } = renderHook(() =>
+      useDraftAttachmentUploads({
+        projectId: "proj_1",
+        target: { key: "bottom", addAttachment: vi.fn() },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleAttachFiles([
+        new File(["heic"], "IMG_0001.heic", { type: "image/heic" }),
+        new File(["png"], "shot.png", { type: "image/png" }),
+      ]);
+    });
+
+    expect(result.current.attachmentError).toBe(
+      `Failed to attach IMG_0001.heic, shot.png: ${message}`,
+    );
   });
 
   it("does not leak a dismissed upload into a later independent draft", async () => {

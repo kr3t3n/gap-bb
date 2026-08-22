@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SmilePlusIcon } from "@hugeicons/core-free-icons";
 import type { Task } from "../../shared/contract.js";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
+import type { DelegationRpcContract } from "../../delegate/contract.js";
+import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import {
   listAllTasks,
   useMentionItems,
@@ -196,6 +197,7 @@ function DetailSkeleton() {
 
 function TaskDetail({ task }: { task: Task }) {
   const rpc = useTasksRpc();
+  const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -482,6 +484,15 @@ function TaskDetail({ task }: { task: Task }) {
                 unavailableThreadIds={
                   pullRequests.data?.unavailableThreadIds ?? []
                 }
+                onDetach={async (thread) => {
+                  await delegationRpc.call("taskThreadsDetach", {
+                    taskId: task.id,
+                    threadId: thread.threadId,
+                  });
+                  threads.refresh();
+                  pullRequests.refresh();
+                }}
+                onError={(message) => push(message)}
               />
             </div>
           ) : null}

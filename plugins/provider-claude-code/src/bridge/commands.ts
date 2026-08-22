@@ -88,6 +88,9 @@ export const claudeTurnStartParamsSchema = z.object({
   providerSubagentsEnabled: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
   permissionEscalation: bridgePermissionEscalationSchema,
+  // `/plan` on a later turn: the live session switches into Plan mode before
+  // the prompt is pushed. Undefined keeps the session's current mode.
+  claudeCodePermissionMode: z.literal("plan").optional(),
 });
 
 export const claudeTurnSteerParamsSchema = z.object({
@@ -101,6 +104,7 @@ export const claudeTurnSteerParamsSchema = z.object({
   memoryEnabled: z.boolean().optional(),
   providerSubagentsEnabled: z.boolean().optional(),
   permissionEscalation: bridgePermissionEscalationSchema,
+  claudeCodePermissionMode: z.literal("plan").optional(),
 });
 
 /** The canonical Provider Bridge Protocol params, per method. */

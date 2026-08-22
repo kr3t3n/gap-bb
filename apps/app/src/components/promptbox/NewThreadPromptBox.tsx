@@ -65,7 +65,7 @@ import { selectPrimaryHost, useHosts } from "@/hooks/queries/host-queries";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import {
-  isClaudePlanModePrompt,
+  isPlanModePrompt,
   permissionDisplayForPromptMode,
 } from "@bb/client-core";
 
@@ -182,8 +182,6 @@ interface NewThreadPromptBoxUIProps {
   /** Active root-composer binding for plugin composer hooks and customizations. */
   pluginComposerHost?: PluginComposerHost | null;
   textEffects?: readonly ComposerTextEffectSource[];
-  /** zenMode storage key used for the root-compose zen-mode atom. */
-  zenModeStorageKey: string;
   /** Overrides the default new-thread placeholder copy. */
   placeholder?: string;
 
@@ -236,7 +234,6 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
   autoFocus,
   pluginComposerHost,
   textEffects,
-  zenModeStorageKey,
   placeholder: placeholderOverride,
   history,
   typeahead,
@@ -307,7 +304,6 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
           disabledReason={disabledReason}
           autoFocus={autoFocus}
           textEffects={textEffects}
-          zenModeStorageKey={zenModeStorageKey}
           placeholder={placeholderOverride}
           history={history}
           typeahead={typeahead}
@@ -346,7 +342,6 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   disabledReason,
   autoFocus,
   textEffects,
-  zenModeStorageKey,
   placeholder: placeholderOverride,
   history,
   typeahead,
@@ -361,20 +356,22 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   const isProjectlessPrompt = project?.value === null;
   const placeholder =
     placeholderOverride ?? getNewThreadPromptPlaceholder(isProjectlessPrompt);
+  const selectedProviderPlanModeCopy = execution.provider.options?.find(
+    (option) => option.value === execution.provider.selectedId,
+  )?.planModeCopy;
   const promptModeInput = useMemo(
     () => ({
-      providerId: execution.provider.selectedId,
+      planModeCopy: selectedProviderPlanModeCopy,
       value,
       mentionRanges,
     }),
-    [execution.provider.selectedId, mentionRanges, value],
+    [selectedProviderPlanModeCopy, mentionRanges, value],
   );
   const permissionDisplayOverride = useMemo(
     () => permissionDisplayForPromptMode(promptModeInput),
     [promptModeInput],
   );
-  const permissionPickerDisabledByPlanMode =
-    isClaudePlanModePrompt(promptModeInput);
+  const permissionPickerDisabledByPlanMode = isPlanModePrompt(promptModeInput);
   const submitTitle = isSubmitting
     ? "Submitting..."
     : execution.model.isLoading
@@ -415,10 +412,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
           title: submitTitle,
         }}
         autoFocus={autoFocus}
-        zenMode={{
-          layout: "root-compose",
-          storageKey: zenModeStorageKey,
-        }}
+        editorLayout="root-compose"
         minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
         placeholder={placeholder}
         header={modeConfig.header}
@@ -429,7 +423,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
           reproduces the 4px gap main got from a
           `space-y-1` wrapper in RootComposeView (now gone since the
           standalone project row was removed). */}
-      <div className="mt-1 flex items-center justify-between gap-2 px-3.5">
+      <div className="mt-1 flex select-none items-center justify-between gap-2 px-3.5">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {project ? (
             <ProjectSelector

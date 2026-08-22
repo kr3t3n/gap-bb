@@ -275,6 +275,31 @@ describe("host.list_branches dispatch", () => {
     expect(result.operation).toEqual({ kind: "none" });
   });
 
+  it("lists branches for a bare repository root that holds sibling worktrees", async () => {
+    const origin = await initBranchRepo();
+    const root = await makeTempDir("bb-host-branches-bare-root-");
+    await runGitCommand(["clone", "--bare", origin, ".bare"], { cwd: root });
+    await fs.writeFile(path.join(root, ".git"), "gitdir: ./.bare\n", "utf8");
+    await runGitCommand(["worktree", "add", "main", "main"], { cwd: root });
+    const harness = createHarness();
+
+    const result = await dispatchOnlineRpcCommand(
+      { type: "host.list_branches", path: root, limit: 50 },
+      harness.dispatchOptions(),
+    );
+
+    expect(result.checkout).toMatchObject({
+      kind: "branch",
+      branchName: "develop",
+    });
+    expect(result.defaultBranch).toBe("main");
+    expect(result.branches).toEqual(
+      expect.arrayContaining(["main", "develop", "release/1.2"]),
+    );
+    expect(result.hasUncommittedChanges).toBe(false);
+    expect(result.operation).toEqual({ kind: "none" });
+  });
+
   it("returns an empty list for non-git directories", async () => {
     const dirPath = await makeTempDir("bb-host-branches-nongit-");
     const harness = createHarness();

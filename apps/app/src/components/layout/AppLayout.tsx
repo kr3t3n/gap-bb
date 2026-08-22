@@ -21,6 +21,7 @@ import {
   useSidebarThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
+import { CommandPalette } from "@/components/commands/CommandPalette";
 import {
   resolveAutomationBreadcrumbs,
   resolveToolsAreaHeaderMeta,
@@ -847,6 +848,10 @@ export function AppLayout({ children }: AppLayoutProps) {
           <IframeDragGuardOverlay
             active={isSidebarResizing}
             cursor="col-resize"
+          />
+          <CommandPalette
+            threadId={threadId ?? null}
+            projectId={projectId ?? null}
           />
           <ProjectPathDialog
             target={quickCreateProject.projectPathDialog.target}

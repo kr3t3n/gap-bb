@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { threadScope, turnScope, type ThreadEvent } from "@bb/domain";
-import {
-  createDeltaAssembler,
-  type DeltaAssembler,
-} from "@bb/agent-runtime/test/bridge-delta-assembly";
+import { experimental_createDeltaAssembler as createDeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type { DeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import type { ServerNotification as CodexServerNotification } from "./generated/codex-app-server/schema/ServerNotification.js";
 import type { Turn } from "./generated/codex-app-server/schema/v2/Turn.js";
+import {
+  AGENT_MESSAGE_PRESENTATION,
+  COMPACTION_PRESENTATION,
+  PLAN_PRESENTATION,
+  REASONING_PRESENTATION,
+} from "./presentation.js";
 import {
   createCodexEventTranslator,
   type CodexEventTranslator,
@@ -31,6 +35,28 @@ import {
 const THREAD_ID = "t-codex-translation";
 const ENTROPY = "cx-test";
 const ITEM_ID_PATTERN = /^cx-test-i\d+$/;
+
+const IMAGE_PRESENTATION = {
+  label: { pending: "Viewing image", completed: "Viewed image" },
+  icon: { glyph: "Eye" },
+  title: "image.png",
+};
+
+function webSearchPresentation(query: string) {
+  return {
+    label: { pending: "Searching the web", completed: "Searched the web" },
+    icon: { glyph: "Globe" },
+    title: query,
+  };
+}
+
+function webFetchPresentation(url: string) {
+  return {
+    label: { pending: "Fetching page", completed: "Fetched page" },
+    icon: { glyph: "Browser" },
+    title: url,
+  };
+}
 
 function codexEvent<M extends CodexServerNotification["method"]>(
   method: M,
@@ -59,7 +85,9 @@ function codexTurn(args: {
 interface CodexEquivalenceHarness {
   assembler: DeltaAssembler;
   translator: CodexEventTranslator;
-  translate(event: Parameters<CodexEventTranslator["translateEvent"]>[0]): ThreadEvent[];
+  translate(
+    event: Parameters<CodexEventTranslator["translateEvent"]>[0],
+  ): ThreadEvent[];
   /** bb turn id minted for a codex turn id (empty when never seen). */
   turnId(codexTurnId: string): string;
   /** bb item id minted for a codex item id (empty when never seen). */
@@ -328,17 +356,19 @@ describe("codex thread lifecycle translation", () => {
     ).toEqual([]);
   });
 
-  it("maps native thread goal notifications", () => {
+  it("maps native thread goal notifications to the codex goal state", () => {
     const harness = createHarness();
 
     expect(
       harness.translate(codexEvent("thread/goal/cleared", { threadId: "t1" })),
     ).toEqual([
       {
-        type: "thread/goal/cleared",
+        type: "thread/extensionState/updated",
         threadId: "",
         providerThreadId: "",
         scope: threadScope(),
+        kind: "provider-codex/goal",
+        payload: null,
       },
     ]);
     expect(
@@ -360,15 +390,18 @@ describe("codex thread lifecycle translation", () => {
       ),
     ).toEqual([
       {
-        type: "thread/goal/updated",
+        type: "thread/extensionState/updated",
         threadId: "",
         providerThreadId: "",
         scope: threadScope(),
-        objective: "Finish the task",
-        status: "active",
-        tokenBudget: null,
-        tokensUsed: 0,
-        timeUsedSeconds: 0,
+        kind: "provider-codex/goal",
+        payload: {
+          objective: "Finish the task",
+          status: "active",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+        },
       },
     ]);
   });
@@ -416,6 +449,7 @@ describe("codex item translation", () => {
           type: "agentMessage",
           id: harness.itemId("item-1"),
           text: "Hello",
+          presentation: AGENT_MESSAGE_PRESENTATION,
         },
       }),
     );
@@ -462,6 +496,7 @@ describe("codex item translation", () => {
           type: "imageView",
           id: harness.itemId("image-1"),
           path: "/tmp/image.png",
+          presentation: IMAGE_PRESENTATION,
         },
       }),
     );
@@ -482,6 +517,7 @@ describe("codex item translation", () => {
           type: "imageView",
           id: harness.itemId("image-1"),
           path: "/tmp/image.png",
+          presentation: IMAGE_PRESENTATION,
         },
       }),
     );
@@ -821,6 +857,105 @@ describe("codex item translation", () => {
     );
   });
 
+  it("stamps bb-injected tool calls with server bb and the definition's presentation", () => {
+    const harness = createHarness();
+    harness.translator.configureInjectedTools([
+      {
+        name: "bb_workflow_run",
+        presentation: {
+          label: {
+            pending: "Starting workflow",
+            completed: "Started workflow",
+          },
+          icon: { glyph: "Workflow" },
+        },
+      },
+    ]);
+    const injected = harness.translate(
+      codexEvent("item/started", {
+        threadId: "t1",
+        turnId: "turn-1",
+        startedAtMs: 0,
+        item: {
+          type: "dynamicToolCall",
+          id: "dyn-bb-1",
+          namespace: null,
+          tool: "bb_workflow_run",
+          arguments: { name: "review" },
+          status: "inProgress",
+          contentItems: null,
+          success: null,
+          durationMs: null,
+        },
+      }),
+    );
+    expect(injected).toContainEqual(
+      expect.objectContaining({
+        type: "item/started",
+        item: {
+          type: "toolCall",
+          id: harness.itemId("dyn-bb-1"),
+          server: "bb",
+          tool: "bb_workflow_run",
+          arguments: { name: "review" },
+          status: "pending",
+          presentation: {
+            label: {
+              pending: "Starting workflow",
+              completed: "Started workflow",
+            },
+            icon: { glyph: "Workflow" },
+          },
+        },
+      }),
+    );
+
+    // A dynamic tool the session was not constructed with is codex's own:
+    // no server, the generic presentation.
+    const native = harness.translate(
+      codexEvent("item/started", {
+        threadId: "t1",
+        turnId: "turn-1",
+        startedAtMs: 0,
+        item: {
+          type: "dynamicToolCall",
+          id: "dyn-native-1",
+          namespace: null,
+          tool: "codex_native_tool",
+          arguments: {},
+          status: "inProgress",
+          contentItems: null,
+          success: null,
+          durationMs: null,
+        },
+      }),
+    );
+    expect(native).toContainEqual(
+      expect.objectContaining({
+        type: "item/started",
+        item: expect.objectContaining({
+          type: "toolCall",
+          tool: "codex_native_tool",
+          presentation: {
+            label: {
+              pending: "Running codex_native_tool",
+              completed: "Ran codex_native_tool",
+            },
+            icon: { glyph: "Toolbox" },
+          },
+        }),
+      }),
+    );
+    expect(
+      native.some(
+        (event) =>
+          event.type === "item/started" &&
+          event.item.type === "toolCall" &&
+          event.item.server !== undefined,
+      ),
+    ).toBe(false);
+  });
+
   it("preserves textual errors on failed dynamicToolCalls", () => {
     const harness = createHarness();
     const events = harness.translate({
@@ -895,7 +1030,7 @@ describe("codex item translation", () => {
     );
   });
 
-  it("maps collabAgentToolCall to toolCall with agent states as the result", () => {
+  it("maps a collabAgentToolCall that names its child to a delegation", () => {
     const harness = createHarness();
     const events = harness.translate(
       codexEvent("item/completed", {
@@ -921,19 +1056,60 @@ describe("codex item translation", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "item/completed",
+        item: {
+          type: "delegation",
+          id: harness.itemId("collab-1"),
+          childRef: "sub-thread-1",
+          label: "Inspect the docs directory",
+          status: "completed",
+          background: false,
+          summary: 'sub-thread-1: {"status":"completed","message":"done"}',
+          presentation: {
+            label: { pending: "Spawning agent", completed: "Spawned agent" },
+            icon: { glyph: "UserRound" },
+            title: "Inspect the docs directory",
+          },
+        },
+      }),
+    );
+  });
+
+  it("keeps a collabAgentToolCall without a receiver a generic tool call", () => {
+    const harness = createHarness();
+    const events = harness.translate(
+      codexEvent("item/completed", {
+        threadId: "t1",
+        turnId: "turn-1",
+        completedAtMs: 0,
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab-wait-1",
+          tool: "wait",
+          status: "completed",
+          senderThreadId: "t1",
+          receiverThreadIds: [],
+          prompt: null,
+          model: null,
+          reasoningEffort: null,
+          agentsStates: {},
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
         item: expect.objectContaining({
           type: "toolCall",
-          tool: "spawnAgent",
+          tool: "wait",
           status: "completed",
-          arguments: expect.objectContaining({
-            senderThreadId: "t1",
-            receiverThreadIds: ["sub-thread-1"],
-            prompt: "Inspect the docs directory",
-            model: "gpt-5.4",
-            reasoningEffort: "medium",
-          }),
-          result: {
-            "sub-thread-1": { status: "completed", message: "done" },
+          arguments: { senderThreadId: "t1", receiverThreadIds: [] },
+          result: {},
+          presentation: {
+            label: {
+              pending: "Waiting for agents",
+              completed: "Waited for agents",
+            },
+            icon: { glyph: "UserRound" },
           },
         }),
       }),
@@ -967,7 +1143,9 @@ describe("codex item translation", () => {
       expect.objectContaining({
         type: "item/completed",
         item: expect.objectContaining({
-          type: "toolCall",
+          type: "delegation",
+          childRef: "sub-thread-1",
+          label: "Spawn agent",
           status: "interrupted",
         }),
       }),
@@ -997,6 +1175,7 @@ describe("codex item translation", () => {
           id: harness.itemId("reasoning-1"),
           summary: ["Read the search flow"],
           content: ["Investigated the search sidebar state machine."],
+          presentation: REASONING_PRESENTATION,
         },
       }),
     );
@@ -1023,6 +1202,7 @@ describe("codex item translation", () => {
           type: "plan",
           id: harness.itemId("plan-1"),
           text: "1. Read the file\n2. Edit the function",
+          presentation: PLAN_PRESENTATION,
         },
       }),
     );
@@ -1042,7 +1222,11 @@ describe("codex item translation", () => {
       expect.objectContaining({
         type: "item/started",
         scope: turnScope(harness.turnId("turn-1")),
-        item: { type: "contextCompaction", id: harness.itemId("compact-1") },
+        item: {
+          type: "contextCompaction",
+          id: harness.itemId("compact-1"),
+          presentation: COMPACTION_PRESENTATION,
+        },
       }),
     );
   });
@@ -1076,6 +1260,7 @@ describe("codex web item translation", () => {
           id: harness.itemId("web-1"),
           queries: ["react suspense"],
           resultText: null,
+          presentation: webSearchPresentation("react suspense"),
         },
       }),
     );
@@ -1113,6 +1298,7 @@ describe("codex web item translation", () => {
             "react suspense fallback",
           ],
           resultText: null,
+          presentation: webSearchPresentation("react suspense primary"),
         },
       }),
     );
@@ -1143,6 +1329,7 @@ describe("codex web item translation", () => {
           prompt: null,
           pattern: null,
           resultText: null,
+          presentation: webFetchPresentation("https://example.com"),
         },
       }),
     );
@@ -1205,6 +1392,7 @@ describe("codex web item translation", () => {
           prompt: null,
           pattern: "Example Domain",
           resultText: null,
+          presentation: webFetchPresentation("https://example.com"),
         },
       }),
     );
@@ -1403,7 +1591,7 @@ describe("codex delta and usage translation", () => {
 // ---------------------------------------------------------------------------
 
 describe("codex plan translation", () => {
-  it("maps turn/plan/updated step statuses", () => {
+  it("maps turn/plan/updated to a settled planSteps snapshot", () => {
     const harness = createHarness();
     const events = harness.translate(
       codexEvent("turn/plan/updated", {
@@ -1417,23 +1605,33 @@ describe("codex plan translation", () => {
         ],
       }),
     );
-    expect(events).toContainEqual(
+    expect(events).toEqual([
       expect.objectContaining({
-        type: "turn/plan/updated",
+        type: "item/completed",
         scope: turnScope(harness.turnId("turn-1")),
-        explanation: "Here's the plan",
-        plan: [
-          { step: "Read the file", status: "completed" },
-          { step: "Edit the function", status: "active" },
-          { step: "Run tests", status: "pending" },
-        ],
+        item: {
+          type: "planSteps",
+          id: expect.stringMatching(ITEM_ID_PATTERN),
+          steps: [
+            { step: "Read the file", status: "completed" },
+            { step: "Edit the function", status: "active" },
+            { step: "Run tests", status: "pending" },
+          ],
+          explanation: "Here's the plan",
+          status: "completed",
+          presentation: {
+            label: { pending: "Updating plan", completed: "Updated plan" },
+            icon: { glyph: "ListTodo" },
+            title: "Edit the function",
+          },
+        },
       }),
-    );
+    ]);
   });
 
-  it("tolerates null explanations", () => {
+  it("mints one planSteps item per snapshot and tolerates null explanations", () => {
     const harness = createHarness();
-    const events = harness.translate({
+    const first = harness.translate({
       method: "turn/plan/updated",
       params: {
         threadId: "t1",
@@ -1445,18 +1643,45 @@ describe("codex plan translation", () => {
         ],
       },
     });
-
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "turn/plan/updated",
-        scope: turnScope(harness.turnId("turn-1")),
+    const second = harness.translate({
+      method: "turn/plan/updated",
+      params: {
+        threadId: "t1",
+        turnId: "turn-1",
+        explanation: null,
         plan: [
           { step: "Read the file", status: "completed" },
-          { step: "Run tests", status: "pending" },
+          { step: "Run tests", status: "completed" },
         ],
+      },
+    });
+
+    expect(first).toEqual([
+      expect.objectContaining({
+        type: "item/completed",
+        scope: turnScope(harness.turnId("turn-1")),
+        item: expect.objectContaining({
+          type: "planSteps",
+          steps: [
+            { step: "Read the file", status: "completed" },
+            { step: "Run tests", status: "pending" },
+          ],
+        }),
       }),
+    ]);
+    expect(
+      first[0]?.type === "item/completed" ? first[0].item : null,
+    ).not.toHaveProperty("explanation");
+    // The later snapshot supersedes the earlier one as its own item.
+    expect(second).toHaveLength(1);
+    const firstItem =
+      first[0]?.type === "item/completed" ? first[0].item : null;
+    const secondItem =
+      second[0]?.type === "item/completed" ? second[0].item : null;
+    expect(secondItem?.id).not.toBe(firstItem?.id);
+    expect(second.some((event) => event.type === "turn/plan/updated")).toBe(
+      false,
     );
-    expect(events[0]).not.toHaveProperty("explanation");
   });
 });
 

@@ -135,7 +135,7 @@ import {
   type JsonValue,
   type ThreadEvent,
 } from "@bb/domain";
-import { assembleCapturedThreadEvents } from "../../../test/bridge-delta-assembly.js";
+import { assembleCapturedThreadEvents } from "@bb/provider-bridge-protocol/testing";
 
 const originalPiBridgeSessionDir = process.env[PI_BRIDGE_SESSION_DIR_ENV];
 
@@ -337,9 +337,7 @@ function createAgentEndEvent(): AgentSessionEvent {
   };
 }
 
-function createTurnEndEvent(
-  stopReason: "toolUse" | "stop",
-): AgentSessionEvent {
+function createTurnEndEvent(stopReason: "toolUse" | "stop"): AgentSessionEvent {
   const hasToolResult = stopReason === "toolUse";
   return {
     type: "turn_end",

@@ -49,6 +49,7 @@ describe("Thread Organizer app registration", () => {
       expect.objectContaining({
         id: "fullscreen-section",
         placement: "inline-preferred",
+        experimental_requiresPrimaryModifier: true,
       }),
     ]);
   });

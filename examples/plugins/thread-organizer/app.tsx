@@ -623,6 +623,7 @@ export default definePluginApp((app) => {
   app.slots.experimental_sidebarSectionAction({
     id: "fullscreen-section",
     placement: "inline-preferred",
+    experimental_requiresPrimaryModifier: true,
     presentation(context) {
       const pressed =
         context.sidebar.experimental_fullscreenSectionId === context.section.id;

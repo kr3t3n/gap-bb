@@ -49,10 +49,12 @@ const stageRuleLayoutClass =
   "col-span-2 col-start-2 row-start-2 min-w-0 lg:col-span-1 lg:col-start-4 lg:row-start-1";
 const workflowSettingsDescription =
   "Rename, re-icon, reorder, and define the workflow your agents follow.";
-// Inter's capital R starts 180/2048 em inside its advance box. Hang only the
-// first line by that optical bound so its visible edge follows the list below.
+// Align the visible R to the rounded-lg panel's top-left tangent. Inter's
+// capital R starts 180/2048 em inside its advance box, so hang that sidebearing
+// back out of the shared radius inset rather than introducing a pixel nudge.
+// The fallback matches the host's rounded-lg token in isolated plugin roots.
 const workflowSettingsDescriptionClass =
-  "[text-indent:-0.088em] text-sm leading-5 text-muted-foreground";
+  "ps-[var(--radius-lg,0.5rem)] [text-indent:-0.088em] text-sm leading-5 text-muted-foreground";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

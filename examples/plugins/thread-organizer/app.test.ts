@@ -317,6 +317,7 @@ describe("workflow settings", () => {
     const description = rendered.getByText(
       "Rename, re-icon, reorder, and define the workflow your agents follow.",
     );
+    expect(description.className).toContain("ps-[var(--radius-lg,0.5rem)]");
     expect(description.className).toContain("[text-indent:-0.088em]");
     expect(description.className).not.toContain("pl-px");
     const planningTitle = rendered.getByLabelText("Planning section title");

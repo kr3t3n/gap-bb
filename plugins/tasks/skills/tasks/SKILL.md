@@ -208,8 +208,12 @@ An instance that cannot push the record back is a normal configuration: set
 `export` refuses, and `check` names the local edits that cannot travel back.
 
 The plugin's own audit comments carry a `systemEvent` and never travel; each
-instance keeps its own. Labels, attachments, and sub-task hierarchy are not
-synced.
+instance keeps its own.
+
+Labels travel by name. Import creates a label the far project does not have,
+using the color the store carries, and then replaces a task's label set with
+the store's. It never recolors a label that already exists, and a label no
+task uses does not travel. Attachments and sub-task hierarchy are not synced.
 
 ## Invariants
 

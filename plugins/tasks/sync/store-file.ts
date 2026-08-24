@@ -30,6 +30,16 @@ const syncCommentSchema = z
   })
   .strict();
 
+/**
+ * A label the record carries, named rather than keyed by id. `color` is used
+ * only when import has to create the label on the far instance; sync never
+ * recolors a label that already exists, so a cosmetic difference between
+ * instances is not treated as drift.
+ */
+const syncLabelSchema = z
+  .object({ name: z.string().min(1), color: z.string().min(1) })
+  .strict();
+
 const syncTaskSchema = z
   .object({
     key: z.string().min(1),
@@ -45,6 +55,8 @@ const syncTaskSchema = z
      * which it refuses instead of overwriting.
      */
     updatedAt: z.string().min(1),
+    /** Label names, matched case-insensitively against the far project. */
+    labels: z.array(z.string().min(1)),
     comments: z.array(syncCommentSchema),
   })
   .strict();
@@ -56,6 +68,12 @@ export const syncStoreSchema = z
     project: z
       .object({ prefix: z.string().min(1), name: z.string().min(1) })
       .strict(),
+    /**
+     * Definitions for every label at least one exported task uses. Import
+     * reads a color from here when it has to create the label. Labels that no
+     * task uses do not travel.
+     */
+    labels: z.array(syncLabelSchema),
     tasks: z.array(syncTaskSchema),
   })
   .strict();
@@ -63,6 +81,7 @@ export const syncStoreSchema = z
 export type SyncStore = z.infer<typeof syncStoreSchema>;
 export type SyncTask = z.infer<typeof syncTaskSchema>;
 export type SyncComment = z.infer<typeof syncCommentSchema>;
+export type SyncLabel = z.infer<typeof syncLabelSchema>;
 
 /** Stable identity of a comment body, shared by every instance. */
 export function commentHash(body: string): string {
@@ -79,6 +98,7 @@ export const SYNCED_TASK_FIELDS = [
   "priority",
   "description",
   "dueDate",
+  "labels",
 ] as const;
 
 export type SyncedTaskField = (typeof SYNCED_TASK_FIELDS)[number];
@@ -96,7 +116,7 @@ export function parseSyncStore(text: string): SyncStore {
     throw new Error(
       `sync store does not match version ${SYNC_STORE_VERSION}: ${result.error.issues
         .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ")}`,
+        .join("; ")}; re-export it from the instance that holds the record`,
     );
   }
   return result.data;
@@ -123,6 +143,7 @@ export function renderTaskMarkdown(
     `| Status | \`${task.status}\` |`,
     `| Priority | ${task.priority} |`,
     `| Due | ${task.dueDate ?? "-"} |`,
+    `| Labels | ${task.labels.join(", ") || "-"} |`,
     `| Notes | ${task.comments.length} |`,
     "",
     `> Generated from \`${storeFileName}\` by \`bb tasks sync export\`. Edit the`,

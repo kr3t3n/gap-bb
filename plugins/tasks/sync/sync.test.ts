@@ -110,6 +110,25 @@ describe("bb tasks sync", () => {
         "--title",
         "Retire the old VM",
       ]);
+      await source.ok([
+        "label",
+        "create",
+        "--project",
+        "AGT",
+        "--name",
+        "infra",
+        "--color",
+        "orange",
+      ]);
+      await source.ok([
+        "label",
+        "create",
+        "--project",
+        "AGT",
+        "--name",
+        "unused",
+      ]);
+      await source.ok(["update", "AGT-1", "--add-label", "infra"]);
       await source.ok(["comment", "AGT-1", "--body", "Counted seven hosts."]);
       // Writes a plugin audit comment locally. It must not travel.
       await source.ok(["update", "AGT-1", "--status", "in_progress"]);
@@ -124,6 +143,9 @@ describe("bb tasks sync", () => {
       expect(record.tasks[0]?.comments.map((note) => note.body)).toEqual([
         "Counted seven hosts.",
       ]);
+      expect(record.tasks[0]?.labels).toEqual(["infra"]);
+      // Only labels a task carries travel, with the color they were given.
+      expect(record.labels).toEqual([{ name: "infra", color: "orange" }]);
       // The rendered record ships beside the JSON for review in a pull request.
       expect(
         await readFile(join(directory, "record/AGT-1.md"), "utf8"),
@@ -146,6 +168,7 @@ describe("bb tasks sync", () => {
         await mirror.ok(["show", "AGT-1", "--json"]),
       ) as {
         task: { key: string; status: string; priority: string };
+        labels: { name: string; color: string }[];
         comments: { body: string; kind: string; systemEvent: string | null }[];
       };
       expect(imported.task).toMatchObject({
@@ -153,6 +176,11 @@ describe("bb tasks sync", () => {
         status: "in_progress",
         priority: "high",
       });
+      // The label did not exist on the mirror, so import created it with the
+      // store's color and applied it.
+      expect(imported.labels.map((label) => [label.name, label.color])).toEqual(
+        [["infra", "orange"]],
+      );
       expect(
         imported.comments
           .filter((comment) => comment.systemEvent === null)
@@ -281,6 +309,86 @@ describe("bb tasks sync", () => {
     }
   });
 
+  it("reconciles label assignments in both directions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bb-tasks-sync-"));
+    const source = await instance(directory);
+    const mirror = await instance(directory);
+    try {
+      await seedProject(source);
+      await source.ok([
+        "label",
+        "create",
+        "--project",
+        "AGT",
+        "--name",
+        "infra",
+        "--color",
+        "orange",
+      ]);
+      await source.ok([
+        "label",
+        "create",
+        "--project",
+        "AGT",
+        "--name",
+        "urgent-ops",
+        "--color",
+        "red",
+      ]);
+      await source.ok([
+        "create",
+        "--project",
+        "AGT",
+        "--title",
+        "Rotate the deploy key",
+        "--label",
+        "infra",
+      ]);
+      await source.ok(["sync", "export", "--project", "AGT"]);
+      await seedProject(mirror);
+      await mirror.ok(["sync", "import", "--project", "AGT", "--apply"]);
+      expect(await mirror.ok(["sync", "check", "--project", "AGT"])).toContain(
+        "drift: 0",
+      );
+
+      // Swap one label for another on the source and re-export.
+      await source.ok([
+        "update",
+        "AGT-1",
+        "--remove-label",
+        "infra",
+        "--add-label",
+        "urgent-ops",
+      ]);
+      await source.ok(["sync", "export", "--project", "AGT"]);
+
+      const drifted = await mirror.cli(["sync", "check", "--project", "AGT"]);
+      expect(drifted.exitCode).toBe(2);
+      expect(drifted.stdout).toContain("DRIFT");
+      expect(drifted.stdout).toContain("labels");
+
+      expect(
+        await mirror.ok(["sync", "import", "--project", "AGT", "--apply"]),
+      ).toContain("fields: labels");
+      const reconciled = JSON.parse(
+        await mirror.ok(["show", "AGT-1", "--json"]),
+      ) as { labels: { name: string }[] };
+      // The store's set replaces the local one: infra is dropped, not merged.
+      expect(reconciled.labels.map((label) => label.name)).toEqual([
+        "urgent-ops",
+      ]);
+      expect(await mirror.ok(["sync", "check", "--project", "AGT"])).toContain(
+        "drift: 0",
+      );
+      expect(
+        await mirror.ok(["sync", "import", "--project", "AGT", "--apply"]),
+      ).toContain("0 change(s) applied");
+    } finally {
+      await source.dispose();
+      await mirror.dispose();
+    }
+  });
+
   it("classifies every drift class from the store and the board", () => {
     const note = (body: string) => ({
       hash: commentHash(body),
@@ -301,6 +409,7 @@ describe("bb tasks sync", () => {
       description: "",
       dueDate: null,
       updatedAt: "2026-08-23T10:00:00.000Z",
+      labels: [],
       comments: [],
       ...overrides,
     });
@@ -313,6 +422,7 @@ describe("bb tasks sync", () => {
       version: 1 as const,
       generatedAt: "2026-08-23T11:00:00.000Z",
       project: { prefix: "AGT", name: "Agents" },
+      labels: [{ name: "infra", color: "blue" }],
       tasks: [
         stored("AGT-1", { comments: [note("Shared note.")] }),
         stored("AGT-2", { priority: "high" }),

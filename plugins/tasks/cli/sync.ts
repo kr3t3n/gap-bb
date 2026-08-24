@@ -7,6 +7,7 @@ import { TASKS_PAGE_MAX_LIMIT } from "../shared/pagination";
 import {
   buildSyncStore,
   checkDrift,
+  labelKey,
   needsExport,
   planImport,
   type BoardTask,
@@ -19,6 +20,7 @@ import {
   renderTaskMarkdown,
   serializeSyncStore,
   type SyncComment,
+  type SyncStore,
 } from "../sync/store-file";
 import {
   assertAllowed,
@@ -75,6 +77,8 @@ function alignedRows(
 
 /** Author recorded on the local audit trail an import leaves behind. */
 const SYNC_AUTHOR_NAME = "sync";
+/** Used only when the store names a label whose color it does not carry. */
+const DEFAULT_LABEL_COLOR = "gray";
 const DRIFT_EXIT_CODE = 2;
 
 export interface SyncCliDeps {
@@ -94,6 +98,7 @@ export interface SyncCliDeps {
     status: BoardTask["status"];
     priority: BoardTask["priority"];
     dueDate: string | null;
+    labelIds: string[];
     authorName: string;
   }): Promise<void>;
 }
@@ -139,6 +144,9 @@ function readBoard(store: TasksApiStore, projectId: string): BoardTask[] {
         description: task.description,
         dueDate: task.dueDate,
         updatedAt: task.updatedAt,
+        labels: store.tasks
+          .listLabelsForTask(task.id)
+          .map((label) => label.name),
         comments: store.tasks
           .listComments(task.id)
           .filter(isSyncableComment)
@@ -199,7 +207,12 @@ async function runExportMode(
       `project ${project.prefix} has no tasks on this board — refusing to overwrite ${path} with an empty store`,
     );
   }
-  const record = buildSyncStore(project, board, new Date().toISOString());
+  const record = buildSyncStore(
+    project,
+    board,
+    store.tasks.listLabels(project.id),
+    new Date().toISOString(),
+  );
   await deps.writeText(hostId, path, serializeSyncStore(record));
   const directory = dirname(path);
   const fileName = path.slice(directory.length + 1) || "the sync store";
@@ -221,9 +234,10 @@ async function runExportMode(
         project: project.prefix,
         tasks: record.tasks.length,
         notes,
+        labels: record.labels.length,
         generatedAt: record.generatedAt,
       })
-    : `Exported ${record.tasks.length} task(s) and ${notes} note(s) to ${path}`;
+    : `Exported ${record.tasks.length} task(s), ${notes} note(s), and ${record.labels.length} label(s) to ${path}`;
 }
 
 function describeAction(action: ImportAction, applied: boolean): string[] {
@@ -259,11 +273,49 @@ function describeAction(action: ImportAction, applied: boolean): string[] {
   }
 }
 
+/**
+ * Ids for the store's label names on this instance, creating any the project
+ * does not have yet. Labels are matched by name because ids are per instance,
+ * for the same reason comments are matched by body. An existing label keeps
+ * its own color: import may add a label, never repaint one.
+ */
+function resolveLabelIds(
+  store: TasksApiStore,
+  project: Project,
+  record: SyncStore,
+  names: readonly string[],
+): string[] {
+  const existing = new Map(
+    store.tasks
+      .listLabels(project.id)
+      .map((label) => [labelKey(label.name), label.id]),
+  );
+  const colors = new Map(
+    record.labels.map((label) => [labelKey(label.name), label.color]),
+  );
+  const ids: string[] = [];
+  for (const name of names) {
+    const key = labelKey(name);
+    let id = existing.get(key);
+    if (id === undefined) {
+      id = store.tasks.createLabel({
+        projectId: project.id,
+        name,
+        color: colors.get(key) ?? DEFAULT_LABEL_COLOR,
+      }).id;
+      existing.set(key, id);
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
 async function applyAction(
   bb: BbPluginApi,
   store: TasksApiStore,
   deps: SyncCliDeps,
   project: Project,
+  record: SyncStore,
   action: ImportAction,
 ): Promise<void> {
   switch (action.kind) {
@@ -280,6 +332,14 @@ async function applyAction(
         priority: action.task.priority,
         dueDate: action.task.dueDate,
       });
+      for (const labelId of resolveLabelIds(
+        store,
+        project,
+        record,
+        action.task.labels,
+      )) {
+        store.tasks.addTaskLabel(created.id, labelId);
+      }
       publishTasksChanged(bb, created.id, project.id);
       for (const comment of action.task.comments) {
         await appendComment(bb, store, created.id, comment);
@@ -294,6 +354,10 @@ async function applyAction(
         status: action.task.status,
         priority: action.task.priority,
         dueDate: action.task.dueDate,
+        // Always sent, so an update reconciles labels to the store's set even
+        // when another field is what differed. updateTask only records a label
+        // change when the set actually moved.
+        labelIds: resolveLabelIds(store, project, record, action.task.labels),
         authorName: SYNC_AUTHOR_NAME,
       });
       return;
@@ -348,7 +412,7 @@ async function runImportMode(
     // is individually atomic, and import is idempotent, so a failure part way
     // through is fixed by running it again rather than by a rollback.
     for (const action of actions) {
-      await applyAction(bb, store, deps, project, action);
+      await applyAction(bb, store, deps, project, record, action);
     }
   }
   const conflicts = actions.filter(

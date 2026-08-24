@@ -596,6 +596,7 @@ function syncDeps(
             status: input.status,
             priority: input.priority,
             dueDate: input.dueDate,
+            labelIds: input.labelIds,
             authorName: input.authorName,
           }),
         ),

@@ -164,8 +164,10 @@ UNTRACKED, and exits 2 when it finds any, so it suits a scheduled automation.
 `export` refuses to write an empty board over an existing record. Configure
 the store path per project with `bb tasks project update <prefix>
 --sync-store <path>`; add `--sync-role mirror` for an instance that imports
-only, whose local edits check reports as unsyncable. Labels, attachments, and
-sub-task hierarchy do not travel.
+only, whose local edits check reports as unsyncable. Labels travel by name:
+import creates one the far project lacks and replaces a task's set, but never
+recolors an existing label, and an unused label does not travel. Attachments
+and sub-task hierarchy do not travel.
 
 Task lists default to 100 rows. JSON pages include `nextCursor`; human pages
 print the exact continuation option when more rows exist. Cursors are bound to

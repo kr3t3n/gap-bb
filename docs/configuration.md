@@ -859,7 +859,8 @@ bb tasks project update AGT --sync-store record/agt.json --sync-role mirror
 
 `bb tasks sync check` exits `2` when it finds drift, so a scheduled automation
 can report without a human reading its output. `bb tasks sync import` is a dry
-run until `--apply`.
+run until `--apply`. Tasks, their notes, and their labels travel; attachments
+and sub-task hierarchy do not.
 
 ### Provider retry plugin
 

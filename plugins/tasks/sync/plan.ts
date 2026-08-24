@@ -2,6 +2,7 @@ import {
   SYNC_STORE_VERSION,
   SYNCED_TASK_FIELDS,
   type SyncComment,
+  type SyncLabel,
   type SyncStore,
   type SyncTask,
   type SyncedTaskField,
@@ -18,6 +19,8 @@ export interface BoardTask {
   description: string;
   dueDate: string | null;
   updatedAt: string;
+  /** Label names as this board spells them. */
+  labels: string[];
   /** User and agent comments only; plugin audit rows are excluded upstream. */
   comments: SyncComment[];
 }
@@ -52,12 +55,20 @@ export interface DriftEntry {
 export function buildSyncStore(
   project: { prefix: string; name: string },
   tasks: readonly BoardTask[],
+  labels: readonly SyncLabel[],
   generatedAt: string,
 ): SyncStore {
+  const used = new Set(tasks.flatMap((task) => task.labels.map(labelKey)));
   return {
     version: SYNC_STORE_VERSION,
     generatedAt,
     project: { prefix: project.prefix, name: project.name },
+    // Only labels a task actually carries: an unused label is board furniture,
+    // and creating it on the far instance would be a change nobody asked for.
+    labels: labels
+      .filter((label) => used.has(labelKey(label.name)))
+      .map((label) => ({ name: label.name, color: label.color }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
     tasks: [...tasks]
       .sort((left, right) => left.number - right.number)
       .map((task) => ({
@@ -69,15 +80,31 @@ export function buildSyncStore(
         description: task.description,
         dueDate: task.dueDate,
         updatedAt: task.updatedAt,
+        labels: [...task.labels].sort((left, right) =>
+          left.localeCompare(right),
+        ),
         comments: task.comments,
       })),
   };
 }
 
+/** Labels are unique per project case-insensitively, so compare that way. */
+export function labelKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
+ * One synced field rendered for comparison and for reporting. Labels collapse
+ * to a sorted, case-folded list so neither their order nor their spelling on
+ * one board reads as drift.
+ */
 function fieldValue(
   task: Pick<SyncTask, SyncedTaskField>,
   field: SyncedTaskField,
 ): string {
+  if (field === "labels") {
+    return task.labels.map(labelKey).sort().join(", ");
+  }
   return task[field] ?? "";
 }
 

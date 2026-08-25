@@ -63,8 +63,8 @@ async function processDueAutomation(
     agentHostsAvailable: boolean;
     serverUrl: string;
   },
-): Promise<void> {
-  if (args.automation.nextRunAt === null) return;
+): Promise<{ skippedNoHost: boolean }> {
+  if (args.automation.nextRunAt === null) return { skippedNoHost: false };
   const expectedNextRunAt = args.automation.nextRunAt;
   let newNextRunAt: number | null;
   let execution;
@@ -85,11 +85,16 @@ async function processDueAutomation(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return;
+    return { skippedNoHost: false };
   }
 
+  // No connected host: an agent automation cannot run. Reported to the caller
+  // rather than swallowed. Returning silently here is what made the 2026-08-24
+  // outage invisible: no run row, no log line, no status change, and no
+  // nextRunAt advance, so every automation kept reading its last "succeeded"
+  // while nothing ran for eight hours. See GAP-5.
   if (execution.mode === "agent" && !args.agentHostsAvailable) {
-    return;
+    return { skippedNoHost: true };
   }
 
   const claim = claimAutomationScheduledRun(db, {
@@ -98,7 +103,7 @@ async function processDueAutomation(
     newNextRunAt,
     now: args.now,
   });
-  if (!claim.advanced) return;
+  if (!claim.advanced) return { skippedNoHost: false };
   publishAutomationChange(bb, args.automation.projectId, [
     "automations-changed",
     "automation-runs-changed",
@@ -129,6 +134,7 @@ async function processDueAutomation(
       );
     });
   }
+  return { skippedNoHost: false };
 }
 
 async function hasConnectedHost(
@@ -150,6 +156,80 @@ async function hasConnectedHost(
   }
 }
 
+/**
+ * Tracks the "no connected host" condition across sweeps so it can be reported
+ * once on entry, periodically while it persists, and once on recovery.
+ *
+ * The sweep runs every 10 seconds, so logging every pass would produce 6 lines a
+ * minute and be ignored. Logging nothing is what happened before, and that cost
+ * eight hours of silent downtime on 2026-08-24. Throttled reporting is the
+ * middle ground: loud on the transition, quiet but present while it lasts.
+ */
+const NO_HOST_REPORT_INTERVAL_MS = 5 * 60_000;
+let noHostSince: number | null = null;
+let noHostLastReportedAt = 0;
+let noHostSkipsWhileDown = 0;
+
+/** Exposed for tests, and to let a caller reset between harness runs. */
+export function resetNoHostReportingState(): void {
+  noHostSince = null;
+  noHostLastReportedAt = 0;
+  noHostSkipsWhileDown = 0;
+}
+
+/**
+ * Whether agent automations are currently being skipped for want of a host, and
+ * for how long. A health check can read this instead of inferring silence.
+ */
+export function getNoHostStatus(): {
+  down: boolean;
+  since: number | null;
+  skipped: number;
+} {
+  return {
+    down: noHostSince !== null,
+    since: noHostSince,
+    skipped: noHostSkipsWhileDown,
+  };
+}
+
+function reportNoHostState(
+  bb: SweepApi,
+  args: { skipped: number; now: number },
+): void {
+  if (args.skipped > 0) {
+    const entering = noHostSince === null;
+    if (entering) {
+      noHostSince = args.now;
+      noHostSkipsWhileDown = 0;
+    }
+    noHostSkipsWhileDown += args.skipped;
+    const dueToReport =
+      entering || args.now - noHostLastReportedAt >= NO_HOST_REPORT_INTERVAL_MS;
+    if (dueToReport) {
+      noHostLastReportedAt = args.now;
+      const downForMs = args.now - (noHostSince ?? args.now);
+      bb.log.warn(
+        `AGENT AUTOMATIONS NOT RUNNING: no connected host, so ${args.skipped} agent automation(s) were skipped this sweep. ` +
+          `Down for ${Math.round(downForMs / 1000)}s, ${noHostSkipsWhileDown} skip(s) so far. ` +
+          `Their schedules did not advance, no run rows exist, and their last recorded status is unchanged — ` +
+          `so they will look healthy while doing nothing. Check that the host daemon is connected.`,
+      );
+    }
+    return;
+  }
+
+  if (noHostSince !== null) {
+    const downForMs = args.now - noHostSince;
+    bb.log.warn(
+      `Agent automations running again: a host is connected after ${Math.round(
+        downForMs / 1000,
+      )}s and ${noHostSkipsWhileDown} skipped sweep-automation pair(s).`,
+    );
+    resetNoHostReportingState();
+  }
+}
+
 export async function sweepDueAutomations(
   bb: SweepApi,
   db: Db,
@@ -162,15 +242,17 @@ export async function sweepDueAutomations(
   const now = args.now ?? Date.now();
   const due = listDueAutomations(db, { now, limit: DUE_AUTOMATION_BATCH_SIZE });
   const agentHostsAvailable = await hasConnectedHost(bb);
+  let skippedNoHost = 0;
   for (const automation of due) {
     try {
-      await processDueAutomation(bb, db, {
+      const outcome = await processDueAutomation(bb, db, {
         pluginDataDir: args.pluginDataDir,
         automation,
         now,
         agentHostsAvailable,
         serverUrl: args.serverUrl,
       });
+      if (outcome.skippedNoHost) skippedNoHost += 1;
     } catch (error) {
       bb.log.error(
         `Failed to process due automation ${automation.id}: ${
@@ -179,6 +261,7 @@ export async function sweepDueAutomations(
       );
     }
   }
+  reportNoHostState(bb, { skipped: skippedNoHost, now });
 }
 
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {

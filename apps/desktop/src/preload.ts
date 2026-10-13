@@ -100,6 +100,7 @@ import {
   BB_DESKTOP_CLOSE_WINDOW_REQUEST_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_RESPONSE_CHANNEL,
   BB_DESKTOP_FOCUS_WINDOW_CHANNEL,
+  BB_DESKTOP_SET_WINDOW_WIDTH_CHANNEL,
   BB_DESKTOP_GET_WINDOW_STATE_CHANNEL,
   BB_DESKTOP_OPEN_NEW_TAB_CHANNEL,
   BB_DESKTOP_OPEN_DATA_DIRECTORY_CHANNEL,
@@ -438,6 +439,9 @@ const bbDesktopApi: BbDesktopApi = {
   },
   getWindowState() {
     return invokeDesktopWindowState();
+  },
+  setWindowWidth(width: number) {
+    return ipcRenderer.invoke(BB_DESKTOP_SET_WINDOW_WIDTH_CHANNEL, width);
   },
   installUpdate() {
     return invokeInstallUpdate();

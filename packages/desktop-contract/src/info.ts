@@ -73,6 +73,13 @@ export interface BbDesktopApi extends BbDesktopInfo {
   getInfo(): Promise<BbDesktopInfo>;
   focusWindow?(): void;
   getWindowState?(): Promise<BbDesktopWindowState>;
+  /**
+   * Set the window width in pixels. Height and position stay. Resolves null
+   * for a full-screen or maximized window, which keeps its size.
+   */
+  setWindowWidth?(
+    width: number,
+  ): Promise<{ previousWidth: number; width: number } | null>;
   installUpdate(): Promise<void>;
   onChange(listener: BbDesktopInfoChangeHandler): BbDesktopInfoUnsubscribe;
   onWindowStateChange?(

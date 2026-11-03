@@ -29,7 +29,7 @@
     "@bb/thread-view": "workspace:*",
     "@bb/tunnel-contract": "workspace:*",
     "@better-auth/api-key": "^1.6.23",
-    "@better-auth/drizzle-adapter": "^1.6.23",
+    "@better-auth/drizzle-adapter": "^1.7.7",
     "@earendil-works/pi-ai": "0.84.0",
     "@get-bb/plugin-sdk": "workspace:*",
     "@hono/node-server": "^1.19.11",

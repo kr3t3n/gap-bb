@@ -30,11 +30,6 @@ type ThreadListEntryComparator = (
   right: ThreadListEntry,
 ) => number;
 
-interface GetMobileRecentThreadsArgs {
-  highlightedThreadId: string | null;
-  threads: readonly ThreadListEntry[];
-}
-
 interface MobileRecentThreadRowProps {
   highlighted: boolean;
   projectName: string | null;
@@ -62,30 +57,6 @@ const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
 
   return left.id.localeCompare(right.id);
 };
-
-function getMobileRecentThreads({
-  highlightedThreadId,
-  threads,
-}: GetMobileRecentThreadsArgs): ThreadListEntry[] {
-  const sortedThreads = [...threads].sort(compareMobileRecentThreads);
-  if (highlightedThreadId === null) {
-    return sortedThreads.slice(0, MOBILE_RECENT_THREAD_LIMIT);
-  }
-
-  const highlightedThread = sortedThreads.find(
-    (thread) => thread.id === highlightedThreadId,
-  );
-  if (!highlightedThread) {
-    return sortedThreads.slice(0, MOBILE_RECENT_THREAD_LIMIT);
-  }
-
-  return [
-    highlightedThread,
-    ...sortedThreads
-      .filter((thread) => thread.id !== highlightedThreadId)
-      .slice(0, MOBILE_RECENT_THREAD_LIMIT - 1),
-  ];
-}
 
 function MobileRecentThreadRow({
   highlighted,
@@ -151,8 +122,11 @@ export function RootComposeMobileRecents({
   threads,
 }: RootComposeMobileRecentsProps) {
   const recentThreads = useMemo(
-    () => getMobileRecentThreads({ highlightedThreadId, threads }),
-    [highlightedThreadId, threads],
+    () =>
+      [...threads]
+        .sort(compareMobileRecentThreads)
+        .slice(0, MOBILE_RECENT_THREAD_LIMIT),
+    [threads],
   );
 
   if (!showCreatingRow && recentThreads.length === 0) {

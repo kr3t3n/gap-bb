@@ -55,6 +55,29 @@ afterEach(() => {
 });
 
 describe("RootComposeMobileRecents", () => {
+  it("orders rows by latest attention even when an older row is highlighted", () => {
+    render(
+      <MemoryRouter>
+        <RootComposeMobileRecents
+          highlightedThreadId="thr_old"
+          projectNamesById={new Map()}
+          showCreatingRow={false}
+          threads={[
+            makeThread({ id: "thr_old", title: "Older", latestAttentionAt: 2 }),
+            makeThread({ id: "thr_new", title: "Newer", latestAttentionAt: 3 }),
+          ]}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(
+      ["Newer", "Older"],
+    );
+    expect(
+      screen.getByRole("link", { name: /^Open Older/ }).className,
+    ).toContain("bg-surface-selected");
+  });
+
   it("shows concurrent Plan activity before the runtime spinner", () => {
     render(
       <MemoryRouter>

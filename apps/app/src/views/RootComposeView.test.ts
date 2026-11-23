@@ -375,7 +375,7 @@ function makeProjectBranchesResponse(
 }
 
 describe("buildMobileRecentThreads", () => {
-  it("includes projectless and every project thread", () => {
+  it("filters tagged threads across personal and project recents", () => {
     const sidebarNavigation: SidebarBootstrapResponse = {
       sections: [],
       personalProject: makeProject({
@@ -387,6 +387,10 @@ describe("buildMobileRecentThreads", () => {
             id: "thr_personal",
             projectId: PERSONAL_PROJECT_ID,
           }),
+          makeThread({
+            id: "thr_personal_automation",
+            projectId: PERSONAL_PROJECT_ID,
+          }),
         ],
       }),
       projects: [
@@ -395,8 +399,12 @@ describe("buildMobileRecentThreads", () => {
           kind: "standard",
           name: "App",
           threads: [
+            {
+              ...makeThread({ id: "thr_app", projectId: "proj_app" }),
+              parentThreadId: "thr_app_automation",
+            },
             makeThread({
-              id: "thr_app",
+              id: "thr_app_automation",
               projectId: "proj_app",
             }),
           ],
@@ -415,9 +423,13 @@ describe("buildMobileRecentThreads", () => {
       ],
     };
 
-    const threadIds = buildMobileRecentThreads({ sidebarNavigation }).map(
-      (thread) => thread.id,
-    );
+    const threadIds = buildMobileRecentThreads({
+      sidebarNavigation,
+      automationTaggedThreadIds: [
+        "thr_personal_automation",
+        "thr_app_automation",
+      ],
+    }).map((thread) => thread.id);
 
     expect(threadIds).toEqual(["thr_personal", "thr_app", "thr_docs"]);
   });

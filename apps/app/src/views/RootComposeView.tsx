@@ -136,6 +136,7 @@ import {
 } from "./RootComposeSecondaryContent";
 import { resolveComposeHostId } from "./root-compose-environment-selection";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { useAutomationTaggedThreadIds } from "./useAutomationTaggedThreadIds";
 import { RootComposeEmptyWelcome } from "./RootComposeEmptyWelcome";
 import {
   shouldLoadThreadStorageFileList,
@@ -231,6 +232,7 @@ export function shouldStartComposingFromLocationState(state: unknown): boolean {
 
 interface BuildMobileRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
+  automationTaggedThreadIds: readonly string[];
 }
 
 interface ShouldNavigateAfterThreadCreateArgs {
@@ -410,6 +412,7 @@ export function shouldReplaceInitialPromptFromLocationState(
 
 export function buildMobileRecentThreads({
   sidebarNavigation,
+  automationTaggedThreadIds,
 }: BuildMobileRecentThreadsArgs): ThreadListEntry[] {
   if (!sidebarNavigation) return [];
 
@@ -419,7 +422,8 @@ export function buildMobileRecentThreads({
   for (const project of sidebarNavigation.projects) {
     threads.push(...project.threads);
   }
-  return threads;
+  const excludedThreadIds = new Set(automationTaggedThreadIds);
+  return threads.filter((thread) => !excludedThreadIds.has(thread.id));
 }
 
 export function canCreateRootComposeTerminal({
@@ -804,9 +808,17 @@ function RootComposeSurface({
     return () => window.cancelAnimationFrame(handle);
   }, [isPointerCoarse, location.key, promptBoxRef, shouldFocusPrompt]);
 
+  const renderSecondaryPanelAsDrawer = useIsCompactViewport();
+  const automationTaggedThreadIds = useAutomationTaggedThreadIds(
+    renderSecondaryPanelAsDrawer,
+  );
   const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
-    [sidebarNavigation],
+    () =>
+      buildMobileRecentThreads({
+        sidebarNavigation,
+        automationTaggedThreadIds,
+      }),
+    [sidebarNavigation, automationTaggedThreadIds],
   );
   const mobileRecentProjectNamesById = useMemo(() => {
     const namesById = new Map<string, string>();
@@ -869,7 +881,6 @@ function RootComposeSurface({
     [activeFixedSecondaryTab, isPersistedSecondaryPanelOpen],
   );
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
-  const renderSecondaryPanelAsDrawer = useIsCompactViewport();
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport: renderSecondaryPanelAsDrawer,

@@ -399,11 +399,10 @@ describe("buildMobileRecentThreads", () => {
           kind: "standard",
           name: "App",
           threads: [
-            makeThread({
-              id: "thr_app",
-              projectId: "proj_app",
+            {
+              ...makeThread({ id: "thr_app", projectId: "proj_app" }),
               parentThreadId: "thr_app_automation",
-            }),
+            },
             makeThread({
               id: "thr_app_automation",
               projectId: "proj_app",

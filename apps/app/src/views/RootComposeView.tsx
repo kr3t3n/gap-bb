@@ -129,6 +129,7 @@ import {
   useRootComposePinnedPanelToggleBoxClassName,
 } from "./RootComposeSecondaryContent";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { useAutomationTaggedThreadIds } from "./useAutomationTaggedThreadIds";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -217,6 +218,7 @@ export function shouldStartComposingFromLocationState(state: unknown): boolean {
 
 interface BuildMobileRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
+  automationTaggedThreadIds: readonly string[];
 }
 
 interface CanCreateRootComposeTerminalArgs {
@@ -333,6 +335,7 @@ export function shouldReplaceInitialPromptFromLocationState(
 
 export function buildMobileRecentThreads({
   sidebarNavigation,
+  automationTaggedThreadIds,
 }: BuildMobileRecentThreadsArgs): ThreadListEntry[] {
   if (!sidebarNavigation) return [];
 
@@ -342,7 +345,8 @@ export function buildMobileRecentThreads({
   for (const project of sidebarNavigation.projects) {
     threads.push(...project.threads);
   }
-  return threads;
+  const excludedThreadIds = new Set(automationTaggedThreadIds);
+  return threads.filter((thread) => !excludedThreadIds.has(thread.id));
 }
 
 export function canCreateRootComposeTerminal({
@@ -642,9 +646,16 @@ function RootComposeSurface({
     return () => window.cancelAnimationFrame(handle);
   }, [focusPromptBox, isPointerCoarse, location.key, shouldFocusPrompt]);
 
+  const isCompactViewport = useIsCompactViewport();
+  const automationTaggedThreadIds =
+    useAutomationTaggedThreadIds(isCompactViewport);
   const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
-    [sidebarNavigation],
+    () =>
+      buildMobileRecentThreads({
+        sidebarNavigation,
+        automationTaggedThreadIds,
+      }),
+    [sidebarNavigation, automationTaggedThreadIds],
   );
   const systemProviders = useProviderDirectory().data;
   const mobileRecentProvidersById = useMemo(() => {
@@ -714,7 +725,6 @@ function RootComposeSurface({
     fixedPanelTabsState,
   });
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
-  const isCompactViewport = useIsCompactViewport();
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport,

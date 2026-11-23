@@ -66,7 +66,7 @@ describe("getMobileRecentThreads", () => {
     expect(rows.every((row) => row.depth === 0)).toBe(true);
   });
 
-  it("nests a child under its parent instead of listing it as a peer", () => {
+  it("ranks thread groups by their newest attention and keeps descendants nested", () => {
     const rows = getMobileRecentThreads({
       collapsedThreadIds: NONE,
       draftThreadIds: NONE,
@@ -75,19 +75,31 @@ describe("getMobileRecentThreads", () => {
         makeThread({
           id: "thr_child",
           parentThreadId: "thr_parent",
+          latestAttentionAt: 8,
+        }),
+        makeThread({
+          id: "thr_grandchild",
+          parentThreadId: "thr_child",
           latestAttentionAt: 99,
         }),
-        makeThread({ id: "thr_other", latestAttentionAt: 5 }),
+        makeThread({
+          id: "thr_sibling",
+          parentThreadId: "thr_parent",
+          latestAttentionAt: 60,
+        }),
+        makeThread({ id: "thr_other", latestAttentionAt: 50 }),
       ],
     });
 
-    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
-      ["thr_parent", 0],
-      ["thr_child", 1],
-      ["thr_other", 0],
+    expect(
+      rows.map((row) => [row.thread.id, row.depth, row.latestAttentionAt]),
+    ).toEqual([
+      ["thr_parent", 0, 99],
+      ["thr_child", 1, 99],
+      ["thr_grandchild", 2, 99],
+      ["thr_sibling", 1, 60],
+      ["thr_other", 0, 50],
     ]);
-    expect(rows[0]?.hasChildren).toBe(true);
-    expect(rows[1]?.hasChildren).toBe(false);
   });
 
   it("hides descendants of a collapsed parent but keeps the parent", () => {
@@ -101,8 +113,9 @@ describe("getMobileRecentThreads", () => {
       makeThread({
         id: "thr_grandchild",
         parentThreadId: "thr_child",
-        latestAttentionAt: 8,
+        latestAttentionAt: 30,
       }),
+      makeThread({ id: "thr_other", latestAttentionAt: 20 }),
     ];
 
     const rows = getMobileRecentThreads({
@@ -111,8 +124,12 @@ describe("getMobileRecentThreads", () => {
       threads,
     });
 
-    expect(rows.map((row) => row.thread.id)).toEqual(["thr_parent"]);
+    expect(rows.map((row) => row.thread.id)).toEqual([
+      "thr_parent",
+      "thr_other",
+    ]);
     expect(rows[0]?.isCollapsed).toBe(true);
+    expect(rows[0]?.latestAttentionAt).toBe(30);
     expect(rows[0]?.hasChildren).toBe(true);
   });
 

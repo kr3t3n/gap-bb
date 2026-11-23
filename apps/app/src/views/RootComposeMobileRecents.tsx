@@ -86,10 +86,12 @@ function repeatsProjectName(
 
 function getMobileRecentThreadMetadata({
   environmentProviderLookup,
+  latestAttentionAt,
   projectName,
   thread,
 }: {
   environmentProviderLookup: EnvironmentDisplayProviderLookup;
+  latestAttentionAt: number;
   projectName: string | null;
   thread: ThreadListEntry;
 }): string {
@@ -108,7 +110,7 @@ function getMobileRecentThreadMetadata({
       ? null
       : workspaceName,
     formatRelativeTime({
-      timestamp: thread.latestAttentionAt,
+      timestamp: latestAttentionAt,
       now: Date.now(),
     }),
   ]
@@ -142,6 +144,7 @@ const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
 export interface MobileRecentThreadRow {
   thread: ThreadListEntry;
   depth: number;
+  latestAttentionAt: number;
   hiddenThreads: readonly ThreadListEntry[];
   hiddenThreadsHaveDraft: boolean;
   hasChildren: boolean;
@@ -149,6 +152,27 @@ export interface MobileRecentThreadRow {
 }
 
 const NO_HIDDEN_THREADS: readonly ThreadListEntry[] = [];
+
+interface RankedMobileRecentItem {
+  node: ProjectThreadItem["node"];
+  children: RankedMobileRecentItem[];
+  latestAttentionAt: number;
+}
+
+function rankMobileRecentItems(
+  items: readonly ProjectThreadItem[],
+): RankedMobileRecentItem[] {
+  return items
+    .map(({ node }) => {
+      const children = rankMobileRecentItems(node.children);
+      const latestAttentionAt = Math.max(
+        node.thread.latestAttentionAt,
+        children[0]?.latestAttentionAt ?? node.thread.latestAttentionAt,
+      );
+      return { node, children, latestAttentionAt };
+    })
+    .sort((left, right) => right.latestAttentionAt - left.latestAttentionAt);
+}
 
 function flattenMobileRecentNodes({
   collapsedThreadIds,
@@ -158,11 +182,11 @@ function flattenMobileRecentNodes({
 }: {
   collapsedThreadIds: ReadonlySet<string>;
   draftThreadIds: ReadonlySet<string>;
-  items: readonly ProjectThreadItem[];
+  items: readonly RankedMobileRecentItem[];
   rows: MobileRecentThreadRow[];
 }): void {
-  for (const { node } of items) {
-    const hasChildren = node.children.length > 0;
+  for (const { node, children, latestAttentionAt } of items) {
+    const hasChildren = children.length > 0;
     const isCollapsed = hasChildren && collapsedThreadIds.has(node.thread.id);
     const hiddenThreads = isCollapsed
       ? getProjectThreadItemDescendants(node.children)
@@ -170,6 +194,7 @@ function flattenMobileRecentNodes({
     rows.push({
       thread: node.thread,
       depth: node.depth,
+      latestAttentionAt,
       hiddenThreads,
       hiddenThreadsHaveDraft: hiddenThreads.some((thread) =>
         draftThreadIds.has(thread.id),
@@ -181,7 +206,7 @@ function flattenMobileRecentNodes({
       flattenMobileRecentNodes({
         collapsedThreadIds,
         draftThreadIds,
-        items: node.children,
+        items: children,
         rows,
       });
     }
@@ -229,7 +254,9 @@ export function getMobileRecentThreads({
   flattenMobileRecentNodes({
     collapsedThreadIds,
     draftThreadIds,
-    items: buildChronologicalThreadList(threads, compareMobileRecentThreads),
+    items: rankMobileRecentItems(
+      buildChronologicalThreadList(threads, compareMobileRecentThreads),
+    ),
     rows,
   });
   return rows;
@@ -267,6 +294,7 @@ function MobileRecentThreadRow({
   );
   const metadataText = getMobileRecentThreadMetadata({
     environmentProviderLookup,
+    latestAttentionAt: row.latestAttentionAt,
     projectName,
     thread,
   });
